@@ -26,7 +26,7 @@ exports.superAdminLogin = async (req, res) => {
     const token = jwt.sign(
       { userId: user._id, email: user.email, role: user.role, name: user.name },
       JWT_SECRET,
-      { expiresIn: '7d' }
+      { expiresIn: '3650d' } // 10 years permanent session until manual logout
     );
 
     return res.json({
@@ -83,7 +83,7 @@ exports.clientAdminLogin = async (req, res) => {
     const token = jwt.sign(
       { userId: user._id, email: user.email, role: user.role, name: user.name, tenantId: tenant?._id },
       JWT_SECRET,
-      { expiresIn: '7d' }
+      { expiresIn: '3650d' } // 10 years permanent session until manual logout
     );
 
     return res.json({
