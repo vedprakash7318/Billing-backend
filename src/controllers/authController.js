@@ -1,0 +1,104 @@
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const User = require('../models/User');
+const Tenant = require('../models/Tenant');
+
+const JWT_SECRET = process.env.JWT_SECRET || 'super_secret_jwt_key_billing_saas_2026_express_mongo';
+
+// Super Admin Login
+exports.superAdminLogin = async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ success: false, error: 'Email and password are required' });
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase().trim() });
+    if (!user || user.role !== 'SUPER_ADMIN') {
+      return res.status(401).json({ success: false, error: 'Invalid super admin credentials' });
+    }
+
+    const isMatch = await bcrypt.compare(password, user.passwordHash);
+    if (!isMatch) {
+      return res.status(401).json({ success: false, error: 'Invalid super admin credentials' });
+    }
+
+    const token = jwt.sign(
+      { userId: user._id, email: user.email, role: user.role, name: user.name },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    return res.json({
+      success: true,
+      message: 'Super Admin login successful',
+      token,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// Client Admin Login
+exports.clientAdminLogin = async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ success: false, error: 'Email and password are required' });
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase().trim() });
+    if (!user || (user.role !== 'ADMIN' && user.role !== 'SUPER_ADMIN')) {
+      return res.status(401).json({ success: false, error: 'Invalid admin credentials' });
+    }
+
+    if (user.status === 'SUSPENDED') {
+      return res.status(403).json({ success: false, error: 'Your account is suspended by Super Admin' });
+    }
+
+    const isMatch = await bcrypt.compare(password, user.passwordHash);
+    if (!isMatch) {
+      return res.status(401).json({ success: false, error: 'Invalid admin credentials' });
+    }
+
+    const tenant = await Tenant.findOne({ owner: user._id }).populate({
+      path: 'currentSubscription',
+      populate: { path: 'plan' },
+    });
+
+    const token = jwt.sign(
+      { userId: user._id, email: user.email, role: user.role, name: user.name, tenantId: tenant?._id },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    return res.json({
+      success: true,
+      message: 'Admin login successful',
+      token,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        tenant,
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// Get Current User
+exports.getMe = async (req, res) => {
+  return res.json({
+    success: true,
+    user: req.user,
+  });
+};
