@@ -41,7 +41,7 @@ const requireSuperAdmin = (req, res, next) => {
 };
 
 const requireAdmin = (req, res, next) => {
-  if (!req.user || (req.user.role !== 'ADMIN' && req.user.role !== 'SUPER_ADMIN')) {
+  if (!req.user || (req.user.role !== 'ADMIN' && req.user.role !== 'SUPER_ADMIN' && req.user.role !== 'STAFF')) {
     return res.status(403).json({ success: false, error: 'Forbidden: Admin access required' });
   }
   next();
@@ -53,10 +53,18 @@ const attachTenant = async (req, res, next) => {
       return res.status(401).json({ success: false, error: 'Authentication required' });
     }
 
-    let tenant = await Tenant.findOne({ owner: req.user._id }).populate({
-      path: 'currentSubscription',
-      populate: { path: 'plan' },
-    });
+    let tenant = null;
+    if (req.user.role === 'STAFF' && req.user.tenant) {
+      tenant = await Tenant.findById(req.user.tenant).populate({
+        path: 'currentSubscription',
+        populate: { path: 'plan' },
+      });
+    } else {
+      tenant = await Tenant.findOne({ owner: req.user._id }).populate({
+        path: 'currentSubscription',
+        populate: { path: 'plan' },
+      });
+    }
 
     if (!tenant && req.headers['x-tenant-id'] && req.user.role === 'SUPER_ADMIN') {
       tenant = await Tenant.findById(req.headers['x-tenant-id']).populate({

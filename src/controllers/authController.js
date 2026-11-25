@@ -45,7 +45,7 @@ exports.superAdminLogin = async (req, res) => {
   }
 };
 
-// Client Admin Login
+// Client Admin / Staff Login
 exports.clientAdminLogin = async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -54,23 +54,31 @@ exports.clientAdminLogin = async (req, res) => {
     }
 
     const user = await User.findOne({ email: email.toLowerCase().trim() });
-    if (!user || (user.role !== 'ADMIN' && user.role !== 'SUPER_ADMIN')) {
-      return res.status(401).json({ success: false, error: 'Invalid admin credentials' });
+    if (!user || (user.role !== 'ADMIN' && user.role !== 'SUPER_ADMIN' && user.role !== 'STAFF')) {
+      return res.status(401).json({ success: false, error: 'Invalid user credentials' });
     }
 
     if (user.status === 'SUSPENDED') {
-      return res.status(403).json({ success: false, error: 'Your account is suspended by Super Admin' });
+      return res.status(403).json({ success: false, error: 'Your account is suspended' });
     }
 
     const isMatch = await bcrypt.compare(password, user.passwordHash);
     if (!isMatch) {
-      return res.status(401).json({ success: false, error: 'Invalid admin credentials' });
+      return res.status(401).json({ success: false, error: 'Invalid user credentials' });
     }
 
-    const tenant = await Tenant.findOne({ owner: user._id }).populate({
-      path: 'currentSubscription',
-      populate: { path: 'plan' },
-    });
+    let tenant = null;
+    if (user.role === 'STAFF' && user.tenant) {
+      tenant = await Tenant.findById(user.tenant).populate({
+        path: 'currentSubscription',
+        populate: { path: 'plan' },
+      });
+    } else {
+      tenant = await Tenant.findOne({ owner: user._id }).populate({
+        path: 'currentSubscription',
+        populate: { path: 'plan' },
+      });
+    }
 
     const token = jwt.sign(
       { userId: user._id, email: user.email, role: user.role, name: user.name, tenantId: tenant?._id },
@@ -80,13 +88,14 @@ exports.clientAdminLogin = async (req, res) => {
 
     return res.json({
       success: true,
-      message: 'Admin login successful',
+      message: 'Login successful',
       token,
       user: {
         id: user._id,
         name: user.name,
         email: user.email,
         role: user.role,
+        designation: user.designation,
         tenant,
       },
     });
