@@ -387,6 +387,10 @@ exports.verifyRazorpayPayment = async (req, res) => {
     // Update Tenant
     tenant.currentSubscription = newSub._id;
     tenant.status = 'ACTIVE';
+    // Mark trial as used so it cannot be re-activated
+    if (plan.planType === 'FREE_TRIAL' || plan.price === 0) {
+      tenant.hasUsedTrial = true;
+    }
 
     // Credit plan's SMS & WhatsApp quotas
     if (plan.freeSmsQuota && plan.freeSmsQuota > 0) {
@@ -464,7 +468,8 @@ exports.activateFreePlan = async (req, res) => {
 
     // Check if free trial already used
     const previousSubs = await Subscription.countDocuments({ tenant: tenantId });
-    if (previousSubs > 0 && (plan.planType === 'FREE_TRIAL' || plan.price === 0)) {
+    const hasUsedTrial = tenant.hasUsedTrial === true || previousSubs > 0;
+    if (hasUsedTrial && (plan.planType === 'FREE_TRIAL' || plan.price === 0)) {
       return res.status(400).json({
         success: false,
         error: 'Free trial already used on this store. Please select a standard subscription plan.',
@@ -490,6 +495,10 @@ exports.activateFreePlan = async (req, res) => {
 
     tenant.currentSubscription = newSub._id;
     tenant.status = 'ACTIVE';
+    // Mark trial as used so it cannot be re-activated
+    if (plan.planType === 'FREE_TRIAL' || plan.price === 0) {
+      tenant.hasUsedTrial = true;
+    }
 
     // Credit plan's SMS & WhatsApp quotas
     if (plan.freeSmsQuota && plan.freeSmsQuota > 0) {

@@ -244,6 +244,10 @@ exports.createTenant = async (req, res) => {
 
     // Link subscription
     tenant.currentSubscription = subscription._id;
+    // Mark trial as used if plan is FREE_TRIAL or FREE
+    if (plan.planType === 'FREE_TRIAL' || plan.planType === 'FREE') {
+      tenant.hasUsedTrial = true;
+    }
     await tenant.save();
 
     try {
