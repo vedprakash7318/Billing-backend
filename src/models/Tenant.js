@@ -31,9 +31,13 @@ const tenantSchema = new mongoose.Schema(
     autoPayMethod: { type: String, default: 'UPI' },
     autoPayAuthorizedAt: { type: Date },
     autoPayFailureReason: { type: String, trim: true },
-    // Live SMS & WhatsApp balance quotas
+    // Live SMS & WhatsApp balance quotas (Split into Plan Quota & Non-Expiring Booster)
+    smsPlanBalance: { type: Number, default: 0 },
+    smsBoosterBalance: { type: Number, default: 0 },
     smsBalance: { type: Number, default: 0 },
     smsTotalCredited: { type: Number, default: 0 },
+    whatsAppPlanBalance: { type: Number, default: 0 },
+    whatsAppBoosterBalance: { type: Number, default: 0 },
     whatsAppBalance: { type: Number, default: 0 },
     whatsAppTotalCredited: { type: Number, default: 0 },
   },

@@ -3,6 +3,7 @@ const Tenant = require('../models/Tenant');
 const Subscription = require('../models/Subscription');
 const Plan = require('../models/Plan');
 const { calculateSubscriptionDates } = require('../utils/duration');
+const { applyPlanQuota } = require('../utils/quotaHelper');
 const cache = require('../utils/cache');
 
 exports.handleRazorpayWebhook = async (req, res) => {
@@ -121,18 +122,10 @@ exports.handleRazorpayWebhook = async (req, res) => {
           tenant.autoPayStatus = 'ACTIVE';
           tenant.autoPayFailureReason = null;
 
-          if (plan.freeSmsQuota > 0) {
-            tenant.smsBalance = (tenant.smsBalance || 0) + plan.freeSmsQuota;
-            tenant.smsTotalCredited = (tenant.smsTotalCredited || 0) + plan.freeSmsQuota;
-          }
-          if (plan.freeWhatsAppQuota > 0) {
-            tenant.whatsAppBalance = (tenant.whatsAppBalance || 0) + plan.freeWhatsAppQuota;
-            tenant.whatsAppTotalCredited = (tenant.whatsAppTotalCredited || 0) + plan.freeWhatsAppQuota;
-          }
-
           await tenant.save();
-          await cache.del(`sub_overview_${tenant._id}`);
-          await cache.delPattern(`*${tenant._id}*`);
+
+          // Apply plan quotas while preserving lifetime booster credits
+          await applyPlanQuota(tenant._id, plan);
           console.log(`[Webhook] Subscription successfully auto-renewed for: ${tenant.businessName}`);
         }
       }

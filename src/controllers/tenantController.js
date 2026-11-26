@@ -8,6 +8,7 @@ const AuditLog = require('../models/AuditLog');
 const AddOnOrder = require('../models/AddOnOrder');
 const cache = require('../utils/cache');
 const { calculateSubscriptionDates } = require('../utils/duration');
+const { creditBoosterQuota, applyPlanQuota } = require('../utils/quotaHelper');
 
 function escapeRegex(text) {
   if (!text) return '';
@@ -233,8 +234,12 @@ exports.createTenant = async (req, res) => {
       pincode: pincode ? pincode.trim() : null,
       gstin: gstin ? gstin.trim().toUpperCase() : null,
       status: initialStatus,
+      smsPlanBalance: initialSmsQuota,
+      smsBoosterBalance: 0,
       smsBalance: initialSmsQuota,
       smsTotalCredited: initialSmsQuota,
+      whatsAppPlanBalance: initialWhatsAppQuota,
+      whatsAppBoosterBalance: 0,
       whatsAppBalance: initialWhatsAppQuota,
       whatsAppTotalCredited: initialWhatsAppQuota,
     });
@@ -345,17 +350,8 @@ exports.extendSubscription = async (req, res) => {
     tenant.currentSubscription = newSub._id;
     tenant.status = plan.planType === 'FREE_TRIAL' ? 'TRIAL' : 'ACTIVE';
 
-    // Credit plan's SMS & WhatsApp quotas if included
-    if (plan.freeSmsQuota && plan.freeSmsQuota > 0) {
-      tenant.smsBalance = (tenant.smsBalance || 0) + Number(plan.freeSmsQuota);
-      tenant.smsTotalCredited = (tenant.smsTotalCredited || 0) + Number(plan.freeSmsQuota);
-    }
-    if (plan.freeWhatsAppQuota && plan.freeWhatsAppQuota > 0) {
-      tenant.whatsAppBalance = (tenant.whatsAppBalance || 0) + Number(plan.freeWhatsAppQuota);
-      tenant.whatsAppTotalCredited = (tenant.whatsAppTotalCredited || 0) + Number(plan.freeWhatsAppQuota);
-    }
-
-    await tenant.save();
+    // Credit plan's SMS & WhatsApp quotas if included (Preserving booster quota!)
+    await applyPlanQuota(tenant._id, plan);
     await cache.delPattern(`*${id}*`);
     await cache.flush();
 
@@ -476,15 +472,8 @@ exports.grantBooster = async (req, res) => {
       return res.status(404).json({ success: false, error: 'Tenant not found.' });
     }
 
-    if (type === 'SMS') {
-      tenant.smsBalance = (tenant.smsBalance || 0) + numCredits;
-      tenant.smsTotalCredited = (tenant.smsTotalCredited || 0) + numCredits;
-    } else {
-      tenant.whatsAppBalance = (tenant.whatsAppBalance || 0) + numCredits;
-      tenant.whatsAppTotalCredited = (tenant.whatsAppTotalCredited || 0) + numCredits;
-    }
-
-    await tenant.save();
+    // Credit booster quota (Never expires with main plan)
+    const updatedTenant = await creditBoosterQuota(tenant._id, type, numCredits);
 
     await AddOnOrder.create({
       tenant: tenant._id,
@@ -512,10 +501,14 @@ exports.grantBooster = async (req, res) => {
 
     return res.json({
       success: true,
-      message: `🎉 Successfully gifted ${numCredits} free ${type} credits to ${tenant.businessName}!`,
+      message: `🎉 Successfully gifted ${numCredits} free ${type} booster credits to ${tenant.businessName}!`,
       data: {
-        smsBalance: tenant.smsBalance,
-        whatsAppBalance: tenant.whatsAppBalance,
+        smsBalance: updatedTenant.smsBalance,
+        whatsAppBalance: updatedTenant.whatsAppBalance,
+        smsPlanBalance: updatedTenant.smsPlanBalance,
+        smsBoosterBalance: updatedTenant.smsBoosterBalance,
+        whatsAppPlanBalance: updatedTenant.whatsAppPlanBalance,
+        whatsAppBoosterBalance: updatedTenant.whatsAppBoosterBalance,
       },
     });
   } catch (error) {

@@ -8,6 +8,7 @@ const GlobalSetting = require('../models/GlobalSetting');
 const AddOnPack = require('../models/AddOnPack');
 const AddOnOrder = require('../models/AddOnOrder');
 const cache = require('../utils/cache');
+const { creditBoosterQuota, applyPlanQuota } = require('../utils/quotaHelper');
 
 // Initialize Razorpay client helper
 function getRazorpayInstance() {
@@ -183,8 +184,12 @@ exports.getSubscriptionOverview = async (req, res) => {
       razorpayKeyId: process.env.RAZORPAY_KEY_ID || '',
       quotas: {
         smsBalance: tenant?.smsBalance || 0,
+        smsPlanBalance: tenant?.smsPlanBalance || 0,
+        smsBoosterBalance: tenant?.smsBoosterBalance || 0,
         smsTotalCredited: tenant?.smsTotalCredited || 0,
         whatsAppBalance: tenant?.whatsAppBalance || 0,
+        whatsAppPlanBalance: tenant?.whatsAppPlanBalance || 0,
+        whatsAppBoosterBalance: tenant?.whatsAppBoosterBalance || 0,
         whatsAppTotalCredited: tenant?.whatsAppTotalCredited || 0,
         isSmsGloballyEnabled: globalSetting?.isSmsGloballyEnabled !== false,
         isWhatsAppGloballyEnabled: globalSetting?.isWhatsAppGloballyEnabled !== false,
@@ -385,17 +390,10 @@ exports.verifyRazorpayPayment = async (req, res) => {
       tenant.hasUsedTrial = true;
     }
 
-    // Credit plan's SMS & WhatsApp quotas
-    if (plan.freeSmsQuota && plan.freeSmsQuota > 0) {
-      tenant.smsBalance = (tenant.smsBalance || 0) + plan.freeSmsQuota;
-      tenant.smsTotalCredited = (tenant.smsTotalCredited || 0) + plan.freeSmsQuota;
-    }
-    if (plan.freeWhatsAppQuota && plan.freeWhatsAppQuota > 0) {
-      tenant.whatsAppBalance = (tenant.whatsAppBalance || 0) + plan.freeWhatsAppQuota;
-      tenant.whatsAppTotalCredited = (tenant.whatsAppTotalCredited || 0) + plan.freeWhatsAppQuota;
-    }
-
     await tenant.save();
+
+    // Credit plan's SMS & WhatsApp quotas (Preserving non-expiring booster quota!)
+    await applyPlanQuota(tenantId, plan);
 
     // Invalidate caches
     await cache.del(`sub_overview_${tenantId}`);
@@ -493,17 +491,10 @@ exports.activateFreePlan = async (req, res) => {
       tenant.hasUsedTrial = true;
     }
 
-    // Credit plan's SMS & WhatsApp quotas
-    if (plan.freeSmsQuota && plan.freeSmsQuota > 0) {
-      tenant.smsBalance = (tenant.smsBalance || 0) + plan.freeSmsQuota;
-      tenant.smsTotalCredited = (tenant.smsTotalCredited || 0) + plan.freeSmsQuota;
-    }
-    if (plan.freeWhatsAppQuota && plan.freeWhatsAppQuota > 0) {
-      tenant.whatsAppBalance = (tenant.whatsAppBalance || 0) + plan.freeWhatsAppQuota;
-      tenant.whatsAppTotalCredited = (tenant.whatsAppTotalCredited || 0) + plan.freeWhatsAppQuota;
-    }
-
     await tenant.save();
+
+    // Credit plan's SMS & WhatsApp quotas (Preserving non-expiring booster quota!)
+    await applyPlanQuota(tenantId, plan);
 
     // Invalidate caches
     await cache.del(`sub_overview_${tenantId}`);
@@ -656,28 +647,19 @@ exports.verifyAddOnPayment = async (req, res) => {
       notes: `Razorpay Order: ${razorpay_order_id} | Payment: ${razorpay_payment_id} on ${new Date().toLocaleDateString('en-IN')}`,
     });
 
-    // Credit quota to tenant balance
-    if (pack.type === 'SMS') {
-      tenant.smsBalance = (tenant.smsBalance || 0) + pack.credits;
-      tenant.smsTotalCredited = (tenant.smsTotalCredited || 0) + pack.credits;
-    } else if (pack.type === 'WHATSAPP') {
-      tenant.whatsAppBalance = (tenant.whatsAppBalance || 0) + pack.credits;
-      tenant.whatsAppTotalCredited = (tenant.whatsAppTotalCredited || 0) + pack.credits;
-    }
-    await tenant.save();
-
-    // Invalidate caches
-    await cache.del(`sub_overview_${tenantId}`);
-    await cache.delPattern(`tenant_${tenantId}`);
+    // Credit booster quota to tenant (LIFETIME validity, never expires with main plan)
+    const updatedTenant = await creditBoosterQuota(tenantId, pack.type, pack.credits);
 
     return res.json({
       success: true,
-      message: `🎉 Recharge successful! ${pack.credits} ${pack.type} message credits added to your store balance.`,
+      message: `🎉 Recharge successful! ${pack.credits} ${pack.type} booster credits added to your store balance (Never Expires).`,
       data: {
         orderId: addOnOrder._id,
         type: pack.type,
         creditsAdded: pack.credits,
-        newBalance: pack.type === 'SMS' ? tenant.smsBalance : tenant.whatsAppBalance,
+        newBalance: pack.type === 'SMS' ? updatedTenant.smsBalance : updatedTenant.whatsAppBalance,
+        planBalance: pack.type === 'SMS' ? updatedTenant.smsPlanBalance : updatedTenant.whatsAppPlanBalance,
+        boosterBalance: pack.type === 'SMS' ? updatedTenant.smsBoosterBalance : updatedTenant.whatsAppBoosterBalance,
       },
     });
   } catch (error) {

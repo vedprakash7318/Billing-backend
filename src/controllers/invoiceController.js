@@ -6,6 +6,7 @@ const Tenant = require('../models/Tenant');
 const GlobalSetting = require('../models/GlobalSetting');
 const MessageLog = require('../models/MessageLog');
 const cache = require('../utils/cache');
+const { deductMessageQuota } = require('../utils/quotaHelper');
 
 function escapeRegex(text) {
   if (!text) return '';
@@ -163,8 +164,8 @@ exports.createInvoice = async (req, res) => {
     if (deliveryMethod === 'SMS') {
       try {
         console.log(`[SMS DISPATCH] To: ${invoice.customerPhone} | Message: ${messageText}`);
-        // Deduct 1 SMS credit ONLY on success
-        await Tenant.findByIdAndUpdate(tenant._id, { $inc: { smsBalance: -1 } });
+        // Deduct 1 SMS credit with priority (Plan Quota first, then Booster)
+        const deductResult = await deductMessageQuota(tenant._id, 'SMS');
         await MessageLog.create({
           tenant: tenant._id,
           invoice: invoice._id,
@@ -195,8 +196,8 @@ exports.createInvoice = async (req, res) => {
         whatsappUrl = `https://wa.me/${phoneWithCountry}?text=${encodeURIComponent(messageText)}`;
         console.log(`[WHATSAPP DISPATCH] To: ${phoneWithCountry} | Link: ${receiptUrl}`);
 
-        // Deduct 1 WhatsApp credit ONLY on success
-        await Tenant.findByIdAndUpdate(tenant._id, { $inc: { whatsAppBalance: -1 } });
+        // Deduct 1 WhatsApp credit with priority (Plan Quota first, then Booster)
+        const deductResult = await deductMessageQuota(tenant._id, 'WHATSAPP');
         await MessageLog.create({
           tenant: tenant._id,
           invoice: invoice._id,
@@ -375,7 +376,7 @@ exports.sendInvoiceReceipt = async (req, res) => {
       }
 
       console.log(`[SMS SEND] To: ${targetPhone} | Message: ${messageText}`);
-      await Tenant.findByIdAndUpdate(tenant._id, { $inc: { smsBalance: -1 } });
+      const deductResult = await deductMessageQuota(tenant._id, 'SMS');
       await MessageLog.create({
         tenant: tenant._id,
         invoice: invoice._id,
@@ -388,8 +389,9 @@ exports.sendInvoiceReceipt = async (req, res) => {
 
       return res.json({
         success: true,
-        message: `SMS sent successfully to ${targetPhone}`,
-        newBalance: Math.max(0, (tenant.smsBalance || 1) - 1),
+        message: `SMS sent successfully to ${targetPhone} (deducted from ${deductResult.deductedFrom})`,
+        newBalance: deductResult.newTotal,
+        deductedFrom: deductResult.deductedFrom,
       });
     } else {
       if (globalSetting?.isWhatsAppGloballyEnabled === false) {
@@ -409,7 +411,7 @@ exports.sendInvoiceReceipt = async (req, res) => {
       const phoneWithCountry = cleanPhone.length === 10 ? `91${cleanPhone}` : cleanPhone;
       const whatsappUrl = `https://wa.me/${phoneWithCountry}?text=${encodeURIComponent(messageText)}`;
 
-      await Tenant.findByIdAndUpdate(tenant._id, { $inc: { whatsAppBalance: -1 } });
+      const deductResult = await deductMessageQuota(tenant._id, 'WHATSAPP');
       await MessageLog.create({
         tenant: tenant._id,
         invoice: invoice._id,
@@ -422,9 +424,10 @@ exports.sendInvoiceReceipt = async (req, res) => {
 
       return res.json({
         success: true,
-        message: `WhatsApp receipt ready for ${phoneWithCountry}`,
+        message: `WhatsApp receipt ready for ${phoneWithCountry} (deducted from ${deductResult.deductedFrom})`,
         whatsappUrl,
-        newBalance: Math.max(0, (tenant.whatsAppBalance || 1) - 1),
+        newBalance: deductResult.newTotal,
+        deductedFrom: deductResult.deductedFrom,
       });
     }
   } catch (error) {
