@@ -134,19 +134,11 @@ exports.getSubscriptionOverview = async (req, res) => {
 
         const isTrial = sub.status === 'TRIAL' || sub.paymentStatus === 'FREE' || sub.plan?.planType === 'FREE_TRIAL';
 
-        if (isTrial) {
-          // Free trial users can ALWAYS buy a paid plan immediately!
-          canActivate = true;
-        } else if (daysRemaining <= 7) {
-          // Within 7 days of expiry: Allowed to renew
-          canActivate = true;
-        } else {
-          // More than 7 days remaining on active paid plan: Activation strictly locked
-          canActivate = false;
-          renewalDaysLeft = daysRemaining - 7;
-          const openDate = new Date(end);
-          openDate.setDate(openDate.getDate() - 7);
-          renewalOpenDate = openDate;
+        // Merchants can renew or stack plans anytime! Remaining days are preserved.
+        canActivate = true;
+        renewalDaysLeft = daysRemaining > 7 ? daysRemaining - 7 : 0;
+        if (daysRemaining <= 7) {
+          renewalOpenDate = now;
         }
       }
     }
@@ -168,18 +160,26 @@ exports.getSubscriptionOverview = async (req, res) => {
             planDays: sub.planDays || 30,
             status: isExpired ? 'EXPIRED' : sub.status,
             paymentStatus: sub.paymentStatus,
-            canActivate,
+            canActivate: true,
             renewalOpenDate,
             renewalDaysLeft,
             isAutoPayEnabled: Boolean(tenant?.isAutoPayEnabled || sub.isAutoPayEnabled),
           }
         : null,
-      canActivate,
+      canActivate: true,
       daysRemaining,
       stackedDisplay,
       renewalOpenDate,
       renewalDaysLeft,
       isAutoPayEnabled: Boolean(tenant?.isAutoPayEnabled || sub?.isAutoPayEnabled),
+      autoPay: {
+        isEnabled: Boolean(tenant?.isAutoPayEnabled),
+        status: tenant?.autoPayStatus || (tenant?.isAutoPayEnabled ? 'ACTIVE' : 'INACTIVE'),
+        mandateId: tenant?.autoPayMandateId || null,
+        method: tenant?.autoPayMethod || 'UPI_AUTOPAY',
+        authorizedAt: tenant?.autoPayAuthorizedAt || null,
+        failureReason: tenant?.autoPayFailureReason || null,
+      },
       razorpayKeyId: process.env.RAZORPAY_KEY_ID || '',
       quotas: {
         smsBalance: tenant?.smsBalance || 0,
@@ -258,26 +258,6 @@ exports.createRazorpayOrder = async (req, res) => {
 
     if (!plan) {
       return res.status(404).json({ success: false, error: 'Selected plan is not available or inactive' });
-    }
-
-    // Strict 7-day rule check on server:
-    const currentSub = tenant.currentSubscription;
-    const isCurrentTrial = currentSub && (currentSub.status === 'TRIAL' || currentSub.paymentStatus === 'FREE' || currentSub.plan?.planType === 'FREE_TRIAL');
-    if (
-      currentSub &&
-      currentSub.endDate &&
-      currentSub.status === 'ACTIVE' &&
-      !isCurrentTrial
-    ) {
-      const now = new Date();
-      const end = new Date(currentSub.endDate);
-      const daysRemaining = Math.ceil((end.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-      if (daysRemaining > 7) {
-        return res.status(400).json({
-          success: false,
-          error: `Aapka plan abhi active hai (${daysRemaining} din bache hain). Renewal expiry ke 7 din pehle se hi open hoga.`,
-        });
-      }
     }
 
     // Check if free trial/plan
@@ -715,6 +695,12 @@ exports.toggleAutoPay = async (req, res) => {
 
     const nextVal = req.body.enabled !== undefined ? Boolean(req.body.enabled) : !tenant.isAutoPayEnabled;
     tenant.isAutoPayEnabled = nextVal;
+    if (!nextVal) {
+      tenant.autoPayStatus = 'CANCELLED';
+      tenant.autoPayFailureReason = 'Disabled by user';
+    } else {
+      tenant.autoPayStatus = 'ACTIVE';
+    }
 
     if (tenant.currentSubscription) {
       await Subscription.findByIdAndUpdate(tenant.currentSubscription, { isAutoPayEnabled: nextVal });
@@ -729,10 +715,196 @@ exports.toggleAutoPay = async (req, res) => {
       message: nextVal
         ? '⚡ AutoPay enabled! Subscription will auto-renew upon expiry.'
         : 'AutoPay disabled. Manual renewal will be required on expiry.',
-      data: { isAutoPayEnabled: nextVal },
+      data: { isAutoPayEnabled: nextVal, autoPayStatus: tenant.autoPayStatus },
     });
   } catch (error) {
     console.error('toggleAutoPay error:', error);
     return res.status(500).json({ success: false, error: error.message || 'Failed to toggle AutoPay' });
+  }
+};
+
+// 8. POST Setup UPI AutoPay Mandate Order
+exports.setupAutoPayMandateOrder = async (req, res) => {
+  try {
+    const tenantId = req.tenant._id;
+    const tenant = await Tenant.findById(tenantId).populate({
+      path: 'currentSubscription',
+      populate: { path: 'plan' },
+    });
+    if (!tenant) return res.status(404).json({ success: false, error: 'Store not found' });
+
+    const razorpay = getRazorpayInstance();
+    const currentSub = tenant.currentSubscription;
+    const plan = currentSub?.plan;
+
+    // Authorization amount for UPI mandate (e.g. ₹2 refundable auth or nominal)
+    const authAmount = 200; // ₹2.00 in paise
+
+    const options = {
+      amount: authAmount,
+      currency: 'INR',
+      receipt: `mandate_${tenantId.toString().slice(-6)}_${Date.now().toString().slice(-6)}`,
+      notes: {
+        type: 'UPI_AUTOPAY_MANDATE',
+        tenantId: tenantId.toString(),
+        storeName: tenant.businessName,
+        planId: plan?._id?.toString() || '',
+        planName: plan?.name || 'Store Subscription',
+      },
+    };
+
+    const order = await razorpay.orders.create(options);
+
+    return res.json({
+      success: true,
+      orderId: order.id,
+      amount: order.amount,
+      currency: order.currency,
+      keyId: process.env.RAZORPAY_KEY_ID,
+      store: {
+        name: tenant.businessName,
+        email: tenant.email || req.user.email,
+        phone: tenant.phone || req.user.phone || '9876543210',
+      },
+      plan: {
+        name: plan?.name || 'Standard Plan',
+        price: plan?.price || 499,
+      },
+    });
+  } catch (error) {
+    console.error('setupAutoPayMandateOrder error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to initiate UPI AutoPay mandate with Razorpay',
+    });
+  }
+};
+
+// 9. POST Verify UPI AutoPay Mandate
+exports.verifyAutoPayMandate = async (req, res) => {
+  try {
+    const tenantId = req.tenant._id;
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, method } = req.body;
+
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      return res.status(400).json({
+        success: false,
+        error: 'Incomplete mandate verification details (order, payment ID, and signature required)',
+      });
+    }
+
+    // Verify HMAC SHA256 Signature
+    const expectedSignature = crypto
+      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+      .digest('hex');
+
+    if (expectedSignature !== razorpay_signature) {
+      return res.status(400).json({
+        success: false,
+        error: 'Razorpay mandate signature verification failed.',
+      });
+    }
+
+    const tenant = await Tenant.findById(tenantId);
+    if (!tenant) return res.status(404).json({ success: false, error: 'Store not found' });
+
+    tenant.isAutoPayEnabled = true;
+    tenant.autoPayStatus = 'ACTIVE';
+    tenant.autoPayMandateId = razorpay_payment_id;
+    tenant.autoPayMethod = method || 'UPI (Google Pay / PhonePe)';
+    tenant.autoPayAuthorizedAt = new Date();
+    tenant.autoPayFailureReason = null;
+
+    if (tenant.currentSubscription) {
+      await Subscription.findByIdAndUpdate(tenant.currentSubscription, {
+        isAutoPayEnabled: true,
+        autoPayMandateId: razorpay_payment_id,
+      });
+    }
+
+    await tenant.save();
+    await cache.del(`sub_overview_${tenantId}`);
+    await cache.delPattern(`*${tenantId}*`);
+
+    return res.json({
+      success: true,
+      message: '🎉 Google Pay / UPI AutoPay mandate authorized successfully! Subscriptions will auto-debit on expiry date.',
+      data: {
+        isAutoPayEnabled: true,
+        autoPayStatus: 'ACTIVE',
+        autoPayMandateId: razorpay_payment_id,
+        autoPayMethod: tenant.autoPayMethod,
+        authorizedAt: tenant.autoPayAuthorizedAt,
+      },
+    });
+  } catch (error) {
+    console.error('verifyAutoPayMandate error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to verify UPI AutoPay mandate',
+    });
+  }
+};
+
+// 10. POST Cancel AutoPay Mandate
+exports.cancelAutoPay = async (req, res) => {
+  try {
+    const tenantId = req.tenant._id;
+    const tenant = await Tenant.findById(tenantId);
+    if (!tenant) return res.status(404).json({ success: false, error: 'Store not found' });
+
+    tenant.isAutoPayEnabled = false;
+    tenant.autoPayStatus = 'CANCELLED';
+    tenant.autoPayFailureReason = req.body.reason || 'Cancelled by store admin';
+
+    if (tenant.currentSubscription) {
+      await Subscription.findByIdAndUpdate(tenant.currentSubscription, {
+        isAutoPayEnabled: false,
+      });
+    }
+
+    await tenant.save();
+    await cache.del(`sub_overview_${tenantId}`);
+    await cache.delPattern(`*${tenantId}*`);
+
+    return res.json({
+      success: true,
+      message: 'UPI AutoPay mandate cancelled. Your store subscription will not auto-renew; manual renewal will be required on expiry.',
+      data: {
+        isAutoPayEnabled: false,
+        autoPayStatus: 'CANCELLED',
+      },
+    });
+  } catch (error) {
+    console.error('cancelAutoPay error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to cancel AutoPay mandate',
+    });
+  }
+};
+
+// 11. GET Sync AutoPay Status
+exports.syncAutoPayStatus = async (req, res) => {
+  try {
+    const tenantId = req.tenant._id;
+    const tenant = await Tenant.findById(tenantId);
+    if (!tenant) return res.status(404).json({ success: false, error: 'Store not found' });
+
+    return res.json({
+      success: true,
+      data: {
+        isAutoPayEnabled: Boolean(tenant.isAutoPayEnabled),
+        autoPayStatus: tenant.autoPayStatus || 'INACTIVE',
+        autoPayMandateId: tenant.autoPayMandateId,
+        autoPayMethod: tenant.autoPayMethod,
+        authorizedAt: tenant.autoPayAuthorizedAt,
+        failureReason: tenant.autoPayFailureReason,
+      },
+    });
+  } catch (error) {
+    console.error('syncAutoPayStatus error:', error);
+    return res.status(500).json({ success: false, error: error.message || 'Failed to sync AutoPay status' });
   }
 };

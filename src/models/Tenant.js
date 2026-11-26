@@ -22,6 +22,15 @@ const tenantSchema = new mongoose.Schema(
     currentSubscription: { type: mongoose.Schema.Types.ObjectId, ref: 'Subscription' },
     hasUsedTrial: { type: Boolean, default: false },
     isAutoPayEnabled: { type: Boolean, default: false },
+    autoPayStatus: {
+      type: String,
+      enum: ['INACTIVE', 'ACTIVE', 'CANCELLED', 'PAYMENT_FAILED'],
+      default: 'INACTIVE',
+    },
+    autoPayMandateId: { type: String, trim: true },
+    autoPayMethod: { type: String, default: 'UPI' },
+    autoPayAuthorizedAt: { type: Date },
+    autoPayFailureReason: { type: String, trim: true },
     // Live SMS & WhatsApp balance quotas
     smsBalance: { type: Number, default: 0 },
     smsTotalCredited: { type: Number, default: 0 },

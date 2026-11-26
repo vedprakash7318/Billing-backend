@@ -25,6 +25,7 @@ const subscriptionSchema = new mongoose.Schema(
       default: 'MANUAL',
     },
     isAutoPayEnabled: { type: Boolean, default: false },
+    autoPayMandateId: { type: String, trim: true },
     transactionRef: { type: String, trim: true },
     notes: { type: String, trim: true },
   },
