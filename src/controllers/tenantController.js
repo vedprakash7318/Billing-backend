@@ -5,6 +5,8 @@ const User = require('../models/User');
 const Plan = require('../models/Plan');
 const Subscription = require('../models/Subscription');
 const AuditLog = require('../models/AuditLog');
+const AddOnOrder = require('../models/AddOnOrder');
+const cache = require('../utils/cache');
 const { calculateSubscriptionDates } = require('../utils/duration');
 
 function escapeRegex(text) {
@@ -214,6 +216,10 @@ exports.createTenant = async (req, res) => {
       status: 'ACTIVE',
     });
 
+    // Calculate initial SMS and WhatsApp quotas from assigned plan
+    const initialSmsQuota = (plan.freeSmsQuota && plan.freeSmsQuota > 0) ? Number(plan.freeSmsQuota) : 0;
+    const initialWhatsAppQuota = (plan.freeWhatsAppQuota && plan.freeWhatsAppQuota > 0) ? Number(plan.freeWhatsAppQuota) : 0;
+
     // 2. Create Tenant
     const tenant = await Tenant.create({
       businessName: businessName.trim(),
@@ -227,6 +233,10 @@ exports.createTenant = async (req, res) => {
       pincode: pincode ? pincode.trim() : null,
       gstin: gstin ? gstin.trim().toUpperCase() : null,
       status: initialStatus,
+      smsBalance: initialSmsQuota,
+      smsTotalCredited: initialSmsQuota,
+      whatsAppBalance: initialWhatsAppQuota,
+      whatsAppTotalCredited: initialWhatsAppQuota,
     });
 
     // 3. Create Subscription
@@ -334,7 +344,20 @@ exports.extendSubscription = async (req, res) => {
 
     tenant.currentSubscription = newSub._id;
     tenant.status = plan.planType === 'FREE_TRIAL' ? 'TRIAL' : 'ACTIVE';
+
+    // Credit plan's SMS & WhatsApp quotas if included
+    if (plan.freeSmsQuota && plan.freeSmsQuota > 0) {
+      tenant.smsBalance = (tenant.smsBalance || 0) + Number(plan.freeSmsQuota);
+      tenant.smsTotalCredited = (tenant.smsTotalCredited || 0) + Number(plan.freeSmsQuota);
+    }
+    if (plan.freeWhatsAppQuota && plan.freeWhatsAppQuota > 0) {
+      tenant.whatsAppBalance = (tenant.whatsAppBalance || 0) + Number(plan.freeWhatsAppQuota);
+      tenant.whatsAppTotalCredited = (tenant.whatsAppTotalCredited || 0) + Number(plan.freeWhatsAppQuota);
+    }
+
     await tenant.save();
+    await cache.delPattern(`*${id}*`);
+    await cache.flush();
 
     try {
       await AuditLog.create({
@@ -426,5 +449,77 @@ exports.deleteTenant = async (req, res) => {
   } catch (error) {
     console.error('deleteTenant error:', error);
     return res.status(500).json({ success: false, error: error.message || 'Server error deleting tenant' });
+  }
+};
+
+// Grant Free Booster / Quota Pack to Tenant (Super Admin action)
+exports.grantBooster = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { type, credits, note } = req.body;
+
+    if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(404).json({ success: false, error: 'Tenant not found (invalid ID)' });
+    }
+
+    if (!['SMS', 'WHATSAPP'].includes(type)) {
+      return res.status(400).json({ success: false, error: 'Invalid booster type. Must be SMS or WHATSAPP.' });
+    }
+
+    const numCredits = parseInt(credits, 10);
+    if (!numCredits || numCredits <= 0) {
+      return res.status(400).json({ success: false, error: 'Credits must be a positive number (e.g. 50, 100, 500).' });
+    }
+
+    const tenant = await Tenant.findById(id);
+    if (!tenant) {
+      return res.status(404).json({ success: false, error: 'Tenant not found.' });
+    }
+
+    if (type === 'SMS') {
+      tenant.smsBalance = (tenant.smsBalance || 0) + numCredits;
+      tenant.smsTotalCredited = (tenant.smsTotalCredited || 0) + numCredits;
+    } else {
+      tenant.whatsAppBalance = (tenant.whatsAppBalance || 0) + numCredits;
+      tenant.whatsAppTotalCredited = (tenant.whatsAppTotalCredited || 0) + numCredits;
+    }
+
+    await tenant.save();
+
+    await AddOnOrder.create({
+      tenant: tenant._id,
+      type,
+      creditsAdded: numCredits,
+      amountPaid: 0,
+      paymentMethod: 'SUPER_ADMIN_GRANT',
+      paymentStatus: 'PAID',
+      transactionRef: `FREE_GRANT_${Date.now()}`,
+      notes: note || `Super Admin free complimentary ${type} booster pack`,
+    });
+
+    try {
+      await AuditLog.create({
+        action: 'GRANT_FREE_BOOSTER',
+        entity: 'Tenant',
+        entityId: tenant._id.toString(),
+        details: { businessName: tenant.businessName, type, credits: numCredits, note },
+        performedBy: req.user?.email || 'superadmin@billing.com',
+      });
+    } catch (_) {}
+
+    await cache.delPattern(`*${id}*`);
+    await cache.flush();
+
+    return res.json({
+      success: true,
+      message: `🎉 Successfully gifted ${numCredits} free ${type} credits to ${tenant.businessName}!`,
+      data: {
+        smsBalance: tenant.smsBalance,
+        whatsAppBalance: tenant.whatsAppBalance,
+      },
+    });
+  } catch (error) {
+    console.error('grantBooster error:', error);
+    return res.status(500).json({ success: false, error: error.message || 'Failed to grant booster' });
   }
 };

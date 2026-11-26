@@ -11,5 +11,6 @@ router.post('/', tenantController.createTenant);
 router.put('/:id', tenantController.updateTenant);
 router.delete('/:id', tenantController.deleteTenant);
 router.post('/:id/subscription', tenantController.extendSubscription);
+router.post('/:id/grant-booster', tenantController.grantBooster);
 
 module.exports = router;

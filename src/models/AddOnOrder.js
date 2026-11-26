@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const addOnOrderSchema = new mongoose.Schema(
   {
     tenant: { type: mongoose.Schema.Types.ObjectId, ref: 'Tenant', required: true, index: true },
-    pack: { type: mongoose.Schema.Types.ObjectId, ref: 'AddOnPack', required: true },
+    pack: { type: mongoose.Schema.Types.ObjectId, ref: 'AddOnPack', required: false },
     type: { type: String, enum: ['SMS', 'WHATSAPP'], required: true },
     creditsAdded: { type: Number, required: true },
     amountPaid: { type: Number, required: true },

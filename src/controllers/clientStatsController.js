@@ -1,6 +1,7 @@
 const Product = require('../models/Product');
 const Category = require('../models/Category');
 const User = require('../models/User');
+const GlobalSetting = require('../models/GlobalSetting');
 const cache = require('../utils/cache');
 
 exports.getClientStats = async (req, res) => {
@@ -13,7 +14,7 @@ exports.getClientStats = async (req, res) => {
       return res.json({ success: true, data: cachedStats, fromCache: true });
     }
 
-    const [totalProducts, activeProducts, totalCategories, totalEmployees, recentProducts] = await Promise.all([
+    const [totalProducts, activeProducts, totalCategories, totalEmployees, recentProducts, globalSetting] = await Promise.all([
       Product.countDocuments({ tenant: tenantId }),
       Product.countDocuments({ tenant: tenantId, isActive: true }),
       Category.countDocuments({ tenant: tenantId }),
@@ -23,6 +24,7 @@ exports.getClientStats = async (req, res) => {
         .limit(5)
         .populate('category', 'name')
         .lean(),
+      GlobalSetting.findOne().lean(),
     ]);
 
     const sub = req.tenant.currentSubscription;
@@ -59,6 +61,10 @@ exports.getClientStats = async (req, res) => {
         smsTotalCredited: req.tenant.smsTotalCredited || 0,
         whatsAppBalance: req.tenant.whatsAppBalance || 0,
         whatsAppTotalCredited: req.tenant.whatsAppTotalCredited || 0,
+        isSmsGloballyEnabled: globalSetting?.isSmsGloballyEnabled !== false,
+        isWhatsAppGloballyEnabled: globalSetting?.isWhatsAppGloballyEnabled !== false,
+        smsDisabledNotice: globalSetting?.smsDisabledNotice || 'SMS service is temporarily paused by Admin',
+        whatsAppDisabledNotice: globalSetting?.whatsAppDisabledNotice || 'WhatsApp service is temporarily paused by Admin',
       },
       subscription: sub
         ? {
