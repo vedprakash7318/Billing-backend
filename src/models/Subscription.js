@@ -17,6 +17,8 @@ const subscriptionSchema = new mongoose.Schema(
       default: 'PAID',
     },
     amountPaid: { type: Number, default: 0 },
+    stackedPreviousDays: { type: Number, default: 0 },
+    planDays: { type: Number, default: 0 },
     paymentMethod: {
       type: String,
       enum: ['UPI', 'CASH', 'BANK_TRANSFER', 'ONLINE', 'MANUAL'],

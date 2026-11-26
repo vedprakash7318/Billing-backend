@@ -56,6 +56,7 @@ function calculateEndDate(baseDate, durationType, durationValue = 1) {
 function calculateStackedDates(currentSub, plan) {
   const now = new Date();
   let baseDate = now;
+  let stackedPreviousDays = 0;
 
   if (
     currentSub &&
@@ -64,10 +65,13 @@ function calculateStackedDates(currentSub, plan) {
     (currentSub.status === 'ACTIVE' || currentSub.status === 'TRIAL')
   ) {
     baseDate = new Date(currentSub.endDate);
+    stackedPreviousDays = Math.ceil((new Date(currentSub.endDate).getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
   }
 
   const endDate = calculateEndDate(baseDate, plan.durationType, plan.durationValue);
-  return { startDate: now, endDate, baseDate };
+  const planDays = Math.round((endDate.getTime() - baseDate.getTime()) / (1000 * 60 * 60 * 24));
+
+  return { startDate: now, endDate, baseDate, stackedPreviousDays, planDays };
 }
 
 // 1. GET Current subscription status, available plans, and history
@@ -102,6 +106,7 @@ exports.getSubscriptionOverview = async (req, res) => {
     let canActivate = true;
     let renewalOpenDate = null;
     let renewalDaysLeft = 0;
+    let stackedDisplay = null;
 
     if (sub && sub.endDate) {
       const now = new Date();
@@ -112,16 +117,28 @@ exports.getSubscriptionOverview = async (req, res) => {
         isExpired = true;
         canActivate = true;
         daysRemaining = 0;
-      } else if (daysRemaining <= 7) {
-        // Within 7 days of expiry: Allowed to renew
-        canActivate = true;
+        stackedDisplay = 'Expired';
       } else {
-        // More than 7 days remaining on active plan: Activation strictly locked
-        canActivate = false;
-        renewalDaysLeft = daysRemaining - 7;
-        const openDate = new Date(end);
-        openDate.setDate(openDate.getDate() - 7);
-        renewalOpenDate = openDate;
+        // Stacked breakdown: e.g. 3+30 day left
+        if (sub.stackedPreviousDays && sub.stackedPreviousDays > 0) {
+          stackedDisplay = `${sub.stackedPreviousDays}+${sub.planDays || 30} day left`;
+        } else if (daysRemaining > 30) {
+          stackedDisplay = `${daysRemaining - 30}+30 day left`;
+        } else {
+          stackedDisplay = `${daysRemaining} day left`;
+        }
+
+        if (daysRemaining <= 7) {
+          // Within 7 days of expiry: Allowed to renew
+          canActivate = true;
+        } else {
+          // More than 7 days remaining on active plan: Activation strictly locked
+          canActivate = false;
+          renewalDaysLeft = daysRemaining - 7;
+          const openDate = new Date(end);
+          openDate.setDate(openDate.getDate() - 7);
+          renewalOpenDate = openDate;
+        }
       }
     }
 
@@ -137,6 +154,9 @@ exports.getSubscriptionOverview = async (req, res) => {
             startDate: sub.startDate,
             endDate: sub.endDate,
             daysRemaining,
+            stackedDisplay,
+            stackedPreviousDays: sub.stackedPreviousDays || 0,
+            planDays: sub.planDays || 30,
             status: isExpired ? 'EXPIRED' : sub.status,
             paymentStatus: sub.paymentStatus,
             canActivate,
@@ -146,6 +166,7 @@ exports.getSubscriptionOverview = async (req, res) => {
         : null,
       canActivate,
       daysRemaining,
+      stackedDisplay,
       renewalOpenDate,
       renewalDaysLeft,
       razorpayKeyId: process.env.RAZORPAY_KEY_ID || '',
@@ -315,7 +336,7 @@ exports.verifyRazorpayPayment = async (req, res) => {
     }
 
     // Stack dates: preserve existing remaining days (e.g. 3 days of trial + 1 Month)
-    const { startDate, endDate } = calculateStackedDates(tenant.currentSubscription, plan);
+    const { startDate, endDate, stackedPreviousDays, planDays } = calculateStackedDates(tenant.currentSubscription, plan);
 
     // Create Subscription record (recorded for Super Admin & Merchant)
     const newSub = await Subscription.create({
@@ -326,6 +347,8 @@ exports.verifyRazorpayPayment = async (req, res) => {
       status: 'ACTIVE',
       paymentStatus: 'PAID',
       amountPaid: plan.price,
+      stackedPreviousDays,
+      planDays,
       paymentMethod: 'UPI',
       transactionRef: razorpay_payment_id,
       notes: `Razorpay Order: ${razorpay_order_id} | Payment: ${razorpay_payment_id} | Paid on ${new Date().toLocaleDateString('en-IN')}`,
@@ -407,7 +430,7 @@ exports.activateFreePlan = async (req, res) => {
       });
     }
 
-    const { startDate, endDate } = calculateStackedDates(tenant.currentSubscription, plan);
+    const { startDate, endDate, stackedPreviousDays, planDays } = calculateStackedDates(tenant.currentSubscription, plan);
 
     const newSub = await Subscription.create({
       tenant: tenantId,
@@ -417,6 +440,8 @@ exports.activateFreePlan = async (req, res) => {
       status: 'ACTIVE',
       paymentStatus: 'FREE',
       amountPaid: 0,
+      stackedPreviousDays,
+      planDays,
       paymentMethod: 'MANUAL',
       transactionRef: `FREE_${Date.now()}`,
       notes: `Activated Free/Trial plan on ${new Date().toLocaleDateString('en-IN')}`,

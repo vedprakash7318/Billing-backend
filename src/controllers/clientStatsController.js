@@ -27,10 +27,22 @@ exports.getClientStats = async (req, res) => {
 
     const sub = req.tenant.currentSubscription;
     let daysRemaining = null;
+    let stackedDisplay = null;
     if (sub && sub.endDate) {
       const now = new Date();
       const end = new Date(sub.endDate);
       daysRemaining = Math.ceil((end.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+      if (daysRemaining > 0) {
+        if (sub.stackedPreviousDays && sub.stackedPreviousDays > 0) {
+          stackedDisplay = `${sub.stackedPreviousDays}+${sub.planDays || 30} day left`;
+        } else if (daysRemaining > 30) {
+          stackedDisplay = `${daysRemaining - 30}+30 day left`;
+        } else {
+          stackedDisplay = `${daysRemaining} day left`;
+        }
+      } else {
+        stackedDisplay = 'Expired';
+      }
     }
 
     const statsPayload = {
@@ -48,6 +60,7 @@ exports.getClientStats = async (req, res) => {
             durationType: sub.plan?.durationType,
             endDate: sub.endDate,
             daysRemaining,
+            stackedDisplay,
             status: sub.status,
           }
         : null,
