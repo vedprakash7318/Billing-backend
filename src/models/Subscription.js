@@ -24,6 +24,7 @@ const subscriptionSchema = new mongoose.Schema(
       enum: ['UPI', 'CASH', 'BANK_TRANSFER', 'ONLINE', 'MANUAL'],
       default: 'MANUAL',
     },
+    isAutoPayEnabled: { type: Boolean, default: false },
     transactionRef: { type: String, trim: true },
     notes: { type: String, trim: true },
   },

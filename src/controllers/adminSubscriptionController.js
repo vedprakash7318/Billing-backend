@@ -132,11 +132,16 @@ exports.getSubscriptionOverview = async (req, res) => {
           stackedDisplay = `${daysRemaining} day left`;
         }
 
-        if (daysRemaining <= 7) {
+        const isTrial = sub.status === 'TRIAL' || sub.paymentStatus === 'FREE' || sub.plan?.planType === 'FREE_TRIAL';
+
+        if (isTrial) {
+          // Free trial users can ALWAYS buy a paid plan immediately!
+          canActivate = true;
+        } else if (daysRemaining <= 7) {
           // Within 7 days of expiry: Allowed to renew
           canActivate = true;
         } else {
-          // More than 7 days remaining on active plan: Activation strictly locked
+          // More than 7 days remaining on active paid plan: Activation strictly locked
           canActivate = false;
           renewalDaysLeft = daysRemaining - 7;
           const openDate = new Date(end);
@@ -166,6 +171,7 @@ exports.getSubscriptionOverview = async (req, res) => {
             canActivate,
             renewalOpenDate,
             renewalDaysLeft,
+            isAutoPayEnabled: Boolean(tenant?.isAutoPayEnabled || sub.isAutoPayEnabled),
           }
         : null,
       canActivate,
@@ -173,6 +179,7 @@ exports.getSubscriptionOverview = async (req, res) => {
       stackedDisplay,
       renewalOpenDate,
       renewalDaysLeft,
+      isAutoPayEnabled: Boolean(tenant?.isAutoPayEnabled || sub?.isAutoPayEnabled),
       razorpayKeyId: process.env.RAZORPAY_KEY_ID || '',
       quotas: {
         smsBalance: tenant?.smsBalance || 0,
@@ -255,10 +262,12 @@ exports.createRazorpayOrder = async (req, res) => {
 
     // Strict 7-day rule check on server:
     const currentSub = tenant.currentSubscription;
+    const isCurrentTrial = currentSub && (currentSub.status === 'TRIAL' || currentSub.paymentStatus === 'FREE' || currentSub.plan?.planType === 'FREE_TRIAL');
     if (
       currentSub &&
       currentSub.endDate &&
-      (currentSub.status === 'ACTIVE' || currentSub.status === 'TRIAL')
+      currentSub.status === 'ACTIVE' &&
+      !isCurrentTrial
     ) {
       const now = new Date();
       const end = new Date(currentSub.endDate);
@@ -368,6 +377,8 @@ exports.verifyRazorpayPayment = async (req, res) => {
     // Stack dates: preserve existing remaining days (e.g. 3 days of trial + 1 Month)
     const { startDate, endDate, stackedPreviousDays, planDays } = calculateStackedDates(tenant.currentSubscription, plan);
 
+    const isAutoPay = Boolean(req.body.isAutoPayEnabled || req.body.autoPay);
+
     // Create Subscription record (recorded for Super Admin & Merchant)
     const newSub = await Subscription.create({
       tenant: tenantId,
@@ -380,6 +391,7 @@ exports.verifyRazorpayPayment = async (req, res) => {
       stackedPreviousDays,
       planDays,
       paymentMethod: 'UPI',
+      isAutoPayEnabled: isAutoPay,
       transactionRef: razorpay_payment_id,
       notes: `Razorpay Order: ${razorpay_order_id} | Payment: ${razorpay_payment_id} | Paid on ${new Date().toLocaleDateString('en-IN')}`,
     });
@@ -387,6 +399,7 @@ exports.verifyRazorpayPayment = async (req, res) => {
     // Update Tenant
     tenant.currentSubscription = newSub._id;
     tenant.status = 'ACTIVE';
+    tenant.isAutoPayEnabled = isAutoPay;
     // Mark trial as used so it cannot be re-activated
     if (plan.planType === 'FREE_TRIAL' || plan.price === 0) {
       tenant.hasUsedTrial = true;
@@ -690,5 +703,36 @@ exports.verifyAddOnPayment = async (req, res) => {
   } catch (error) {
     console.error('verifyAddOnPayment error:', error);
     return res.status(500).json({ success: false, error: error.message || 'Failed to verify Add-On recharge payment' });
+  }
+};
+
+// 7. Toggle AutoPay / Auto-Renew
+exports.toggleAutoPay = async (req, res) => {
+  try {
+    const tenantId = req.tenant._id;
+    const tenant = await Tenant.findById(tenantId);
+    if (!tenant) return res.status(404).json({ success: false, error: 'Store not found' });
+
+    const nextVal = req.body.enabled !== undefined ? Boolean(req.body.enabled) : !tenant.isAutoPayEnabled;
+    tenant.isAutoPayEnabled = nextVal;
+
+    if (tenant.currentSubscription) {
+      await Subscription.findByIdAndUpdate(tenant.currentSubscription, { isAutoPayEnabled: nextVal });
+    }
+
+    await tenant.save();
+    await cache.del(`sub_overview_${tenantId}`);
+    await cache.delPattern(`*${tenantId}*`);
+
+    return res.json({
+      success: true,
+      message: nextVal
+        ? '⚡ AutoPay enabled! Subscription will auto-renew upon expiry.'
+        : 'AutoPay disabled. Manual renewal will be required on expiry.',
+      data: { isAutoPayEnabled: nextVal },
+    });
+  } catch (error) {
+    console.error('toggleAutoPay error:', error);
+    return res.status(500).json({ success: false, error: error.message || 'Failed to toggle AutoPay' });
   }
 };

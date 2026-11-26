@@ -11,5 +11,6 @@ router.post('/verify-payment', adminSubscriptionController.verifyRazorpayPayment
 router.post('/activate-free', adminSubscriptionController.activateFreePlan);
 router.post('/recharge/create-order', adminSubscriptionController.createAddOnOrder);
 router.post('/recharge/verify-payment', adminSubscriptionController.verifyAddOnPayment);
+router.post('/toggle-autopay', adminSubscriptionController.toggleAutoPay);
 
 module.exports = router;

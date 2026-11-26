@@ -21,6 +21,7 @@ const tenantSchema = new mongoose.Schema(
     },
     currentSubscription: { type: mongoose.Schema.Types.ObjectId, ref: 'Subscription' },
     hasUsedTrial: { type: Boolean, default: false },
+    isAutoPayEnabled: { type: Boolean, default: false },
     // Live SMS & WhatsApp balance quotas
     smsBalance: { type: Number, default: 0 },
     smsTotalCredited: { type: Number, default: 0 },
