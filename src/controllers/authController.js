@@ -73,6 +73,23 @@ exports.clientAdminLogin = async (req, res) => {
         path: 'currentSubscription',
         populate: { path: 'plan' },
       });
+
+      // RULE: Staff / Employee cannot login if subscription is expired
+      const currentSub = tenant?.currentSubscription;
+      const now = new Date();
+      const isExpired =
+        !currentSub ||
+        currentSub.status === 'EXPIRED' ||
+        tenant?.status === 'EXPIRED' ||
+        (currentSub.endDate && new Date(currentSub.endDate) < now);
+
+      if (isExpired) {
+        return res.status(403).json({
+          success: false,
+          error: 'Store subscription is expired. Only Store Admin can login to view details and renew the subscription.',
+          isSubscriptionExpired: true,
+        });
+      }
     } else {
       tenant = await Tenant.findOne({ owner: user._id }).populate({
         path: 'currentSubscription',

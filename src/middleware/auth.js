@@ -81,6 +81,26 @@ const attachTenant = async (req, res, next) => {
       return res.status(403).json({ success: false, error: 'Store access has been suspended by Super Admin' });
     }
 
+    // Check Subscription status and calculate expiry
+    const now = new Date();
+    const currentSub = tenant.currentSubscription;
+    const isExpired =
+      !currentSub ||
+      currentSub.status === 'EXPIRED' ||
+      tenant.status === 'EXPIRED' ||
+      (currentSub.endDate && new Date(currentSub.endDate) < now);
+
+    req.isSubscriptionExpired = isExpired;
+
+    // RULE: If employee (STAFF) attempts access when subscription is expired, block them completely
+    if (req.user.role === 'STAFF' && isExpired) {
+      return res.status(403).json({
+        success: false,
+        error: 'Store subscription has expired. Please contact Store Admin to renew the subscription.',
+        isSubscriptionExpired: true,
+      });
+    }
+
     req.tenant = tenant;
     next();
   } catch (error) {
@@ -88,9 +108,21 @@ const attachTenant = async (req, res, next) => {
   }
 };
 
+const requireActiveSubscription = (req, res, next) => {
+  if (req.isSubscriptionExpired) {
+    return res.status(403).json({
+      success: false,
+      error: 'Your subscription plan has expired. Please renew or activate a plan to add products, categories, or create new bills.',
+      isSubscriptionExpired: true,
+    });
+  }
+  next();
+};
+
 module.exports = {
   verifyToken,
   requireSuperAdmin,
   requireAdmin,
   attachTenant,
+  requireActiveSubscription,
 };

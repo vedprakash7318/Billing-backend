@@ -6,6 +6,8 @@ const { verifyToken, requireAdmin, attachTenant } = require('../middleware/auth'
 router.use(verifyToken, requireAdmin, attachTenant);
 
 router.get('/', adminSubscriptionController.getSubscriptionOverview);
-router.post('/activate', adminSubscriptionController.activatePlan);
+router.post('/create-order', adminSubscriptionController.createRazorpayOrder);
+router.post('/verify-payment', adminSubscriptionController.verifyRazorpayPayment);
+router.post('/activate-free', adminSubscriptionController.activateFreePlan);
 
 module.exports = router;

@@ -1,11 +1,28 @@
+const crypto = require('crypto');
 const mongoose = require('mongoose');
+const Razorpay = require('razorpay');
 const Tenant = require('../models/Tenant');
 const Plan = require('../models/Plan');
 const Subscription = require('../models/Subscription');
 
+// Initialize Razorpay client helper
+function getRazorpayInstance() {
+  const keyId = process.env.RAZORPAY_KEY_ID;
+  const keySecret = process.env.RAZORPAY_KEY_SECRET;
+
+  if (!keyId || !keySecret) {
+    throw new Error('Razorpay keys not configured on server. Please check RAZORPAY_KEY_ID & RAZORPAY_KEY_SECRET');
+  }
+
+  return new Razorpay({
+    key_id: keyId,
+    key_secret: keySecret,
+  });
+}
+
 // Calculate end date based on duration type and value
-function calculateEndDate(startDate, durationType, durationValue = 1) {
-  const end = new Date(startDate);
+function calculateEndDate(baseDate, durationType, durationValue = 1) {
+  const end = new Date(baseDate);
   const val = Number(durationValue) || 1;
 
   switch (durationType) {
@@ -33,7 +50,26 @@ function calculateEndDate(startDate, durationType, durationValue = 1) {
   return end;
 }
 
-// GET Current subscription status, available plans, and history
+// Calculate stacked dates: If current subscription/trial has remaining days (e.g. 3 days left),
+// the new plan's duration is stacked on top of the remaining days (e.g. 3 days + 1 Month = 33 days)
+function calculateStackedDates(currentSub, plan) {
+  const now = new Date();
+  let baseDate = now;
+
+  if (
+    currentSub &&
+    currentSub.endDate &&
+    new Date(currentSub.endDate) > now &&
+    (currentSub.status === 'ACTIVE' || currentSub.status === 'TRIAL')
+  ) {
+    baseDate = new Date(currentSub.endDate);
+  }
+
+  const endDate = calculateEndDate(baseDate, plan.durationType, plan.durationValue);
+  return { startDate: now, endDate, baseDate };
+}
+
+// 1. GET Current subscription status, available plans, and history
 exports.getSubscriptionOverview = async (req, res) => {
   try {
     const tenantId = req.tenant._id;
@@ -56,7 +92,7 @@ exports.getSubscriptionOverview = async (req, res) => {
     const sub = tenant?.currentSubscription;
     let daysRemaining = null;
     let isExpired = false;
-    let canActivate = true; // Allowed if no sub, expired, or within 7 days of expiry
+    let canActivate = true;
     let renewalOpenDate = null;
 
     if (sub && sub.endDate) {
@@ -67,13 +103,15 @@ exports.getSubscriptionOverview = async (req, res) => {
       if (daysRemaining <= 0 || sub.status === 'EXPIRED') {
         isExpired = true;
         canActivate = true;
+      } else if (sub.plan?.planType === 'FREE_TRIAL') {
+        // Free trial users can upgrade to a paid plan at any time!
+        canActivate = true;
       } else if (daysRemaining <= 7) {
-        // Within 7 days of expiry - allowed to renew / activate
+        // Paid plan within 7 days of expiry - allowed to renew
         canActivate = true;
       } else {
-        // More than 7 days remaining - renewal locked
+        // More than 7 days remaining on paid plan
         canActivate = false;
-        // Renewal opens 7 days before endDate
         const openDate = new Date(end);
         openDate.setDate(openDate.getDate() - 7);
         renewalOpenDate = openDate;
@@ -102,6 +140,7 @@ exports.getSubscriptionOverview = async (req, res) => {
           : null,
         canActivate,
         daysRemaining,
+        razorpayKeyId: process.env.RAZORPAY_KEY_ID || '',
         availablePlans: availablePlans.map((p) => ({
           ...p,
           id: p._id,
@@ -114,6 +153,7 @@ exports.getSubscriptionOverview = async (req, res) => {
           status: h.status,
           amountPaid: h.amountPaid,
           paymentMethod: h.paymentMethod,
+          transactionRef: h.transactionRef,
           createdAt: h.createdAt,
         })),
       },
@@ -124,11 +164,11 @@ exports.getSubscriptionOverview = async (req, res) => {
   }
 };
 
-// POST Activate or Renew a plan
-exports.activatePlan = async (req, res) => {
+// 2. POST Create Razorpay Order for a Plan
+exports.createRazorpayOrder = async (req, res) => {
   try {
     const tenantId = req.tenant._id;
-    const { planId, paymentMethod = 'UPI' } = req.body;
+    const { planId } = req.body;
 
     if (!planId || !mongoose.Types.ObjectId.isValid(planId)) {
       return res.status(400).json({ success: false, error: 'Please select a valid subscription plan' });
@@ -147,51 +187,184 @@ exports.activatePlan = async (req, res) => {
       return res.status(404).json({ success: false, error: 'Selected plan is not available or inactive' });
     }
 
-    const currentSub = tenant.currentSubscription;
-    const now = new Date();
-    let startDate = now;
-
-    // RULE ENFORCEMENT: Expiry ke 7 din pehle se hi renew/activate kiya ja sakta hai
-    if (currentSub && currentSub.endDate && currentSub.status === 'ACTIVE') {
-      const end = new Date(currentSub.endDate);
-      const daysRemaining = Math.ceil((end.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-
-      if (daysRemaining > 7) {
-        return res.status(400).json({
-          success: false,
-          error: `Your current plan has ${daysRemaining} days remaining. Plan renewal / activation is permitted only within 7 days of expiry.`,
-        });
-      }
-
-      // If within 7 days and has positive days remaining, extend from the current endDate!
-      if (daysRemaining > 0) {
-        startDate = end;
-      }
+    // Check if free trial/plan
+    if (plan.price === 0 || plan.planType === 'FREE_TRIAL') {
+      return res.json({
+        success: true,
+        isFree: true,
+        plan: {
+          id: plan._id,
+          name: plan.name,
+          price: 0,
+        },
+      });
     }
 
-    const endDate = calculateEndDate(startDate, plan.durationType, plan.durationValue);
+    // Initialize Razorpay
+    const razorpay = getRazorpayInstance();
+    const amountInPaise = Math.round(plan.price * 100);
 
-    // Create new subscription record
+    const options = {
+      amount: amountInPaise,
+      currency: plan.currency || 'INR',
+      receipt: `sub_${tenantId.toString().slice(-6)}_${Date.now().toString().slice(-6)}`,
+      notes: {
+        tenantId: tenantId.toString(),
+        planId: plan._id.toString(),
+        storeName: tenant.businessName,
+      },
+    };
+
+    const order = await razorpay.orders.create(options);
+
+    return res.json({
+      success: true,
+      isFree: false,
+      orderId: order.id,
+      amount: order.amount,
+      currency: order.currency,
+      keyId: process.env.RAZORPAY_KEY_ID,
+      plan: {
+        id: plan._id,
+        name: plan.name,
+        price: plan.price,
+        durationType: plan.durationType,
+        durationValue: plan.durationValue,
+      },
+      store: {
+        name: tenant.businessName,
+        email: tenant.email || req.user.email,
+        phone: tenant.phone || req.user.phone || '9876543210',
+      },
+    });
+  } catch (error) {
+    console.error('createRazorpayOrder error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to initialize payment with Razorpay',
+    });
+  }
+};
+
+// 3. POST Verify Razorpay Payment and Activate Subscription
+exports.verifyRazorpayPayment = async (req, res) => {
+  try {
+    const tenantId = req.tenant._id;
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, planId } = req.body;
+
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !planId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Incomplete payment verification payload (order_id, payment_id, signature required)',
+      });
+    }
+
+    // Verify HMAC SHA256 Signature
+    const expectedSignature = crypto
+      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+      .digest('hex');
+
+    if (expectedSignature !== razorpay_signature) {
+      return res.status(400).json({
+        success: false,
+        error: 'Razorpay payment signature verification failed. Transaction rejected.',
+      });
+    }
+
+    const [tenant, plan] = await Promise.all([
+      Tenant.findById(tenantId).populate('currentSubscription'),
+      Plan.findById(planId),
+    ]);
+
+    if (!tenant || !plan) {
+      return res.status(404).json({ success: false, error: 'Store or Plan not found for activation' });
+    }
+
+    // Stack dates: preserve existing remaining days (e.g. 3 days of trial + 1 Month)
+    const { startDate, endDate } = calculateStackedDates(tenant.currentSubscription, plan);
+
+    // Create Subscription record (recorded for Super Admin & Merchant)
     const newSub = await Subscription.create({
       tenant: tenantId,
       plan: plan._id,
       startDate,
       endDate,
       status: 'ACTIVE',
-      paymentStatus: plan.price === 0 ? 'FREE' : 'PAID',
-      amountPaid: plan.price || 0,
-      paymentMethod,
-      notes: `Activated by Store Admin on ${new Date().toLocaleDateString('en-IN')}`,
+      paymentStatus: 'PAID',
+      amountPaid: plan.price,
+      paymentMethod: 'UPI',
+      transactionRef: razorpay_payment_id,
+      notes: `Razorpay Order: ${razorpay_order_id} | Payment: ${razorpay_payment_id} | Paid on ${new Date().toLocaleDateString('en-IN')}`,
     });
 
-    // Update tenant currentSubscription and status
+    // Update Tenant
     tenant.currentSubscription = newSub._id;
     tenant.status = 'ACTIVE';
     await tenant.save();
 
-    return res.status(201).json({
+    return res.json({
       success: true,
-      message: `🎉 Plan "${plan.name}" successfully activated! Valid until ${endDate.toLocaleDateString('en-IN')}`,
+      message: `🎉 Payment successful! Plan "${plan.name}" activated. Valid until ${endDate.toLocaleDateString('en-IN')}`,
+      data: {
+        subscriptionId: newSub._id,
+        planName: plan.name,
+        startDate,
+        endDate,
+        paymentId: razorpay_payment_id,
+        status: 'ACTIVE',
+      },
+    });
+  } catch (error) {
+    console.error('verifyRazorpayPayment error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'Payment verification and plan activation failed',
+    });
+  }
+};
+
+// 4. POST Activate Free Plan (e.g. Free Trial)
+exports.activateFreePlan = async (req, res) => {
+  try {
+    const tenantId = req.tenant._id;
+    const { planId } = req.body;
+
+    const [tenant, plan] = await Promise.all([
+      Tenant.findById(tenantId).populate('currentSubscription'),
+      Plan.findOne({ _id: planId, isActive: true }),
+    ]);
+
+    if (!tenant || !plan) {
+      return res.status(404).json({ success: false, error: 'Store or Plan not found' });
+    }
+
+    if (plan.price > 0 && plan.planType !== 'FREE_TRIAL') {
+      return res.status(400).json({ success: false, error: 'This is a paid plan. Please complete payment via Razorpay.' });
+    }
+
+    const { startDate, endDate } = calculateStackedDates(tenant.currentSubscription, plan);
+
+    const newSub = await Subscription.create({
+      tenant: tenantId,
+      plan: plan._id,
+      startDate,
+      endDate,
+      status: 'ACTIVE',
+      paymentStatus: 'FREE',
+      amountPaid: 0,
+      paymentMethod: 'MANUAL',
+      transactionRef: `FREE_${Date.now()}`,
+      notes: `Activated Free/Trial plan on ${new Date().toLocaleDateString('en-IN')}`,
+    });
+
+    tenant.currentSubscription = newSub._id;
+    tenant.status = 'ACTIVE';
+    await tenant.save();
+
+    return res.json({
+      success: true,
+      message: `🎉 Free Plan "${plan.name}" activated! Valid until ${endDate.toLocaleDateString('en-IN')}`,
       data: {
         subscriptionId: newSub._id,
         planName: plan.name,
@@ -201,7 +374,7 @@ exports.activatePlan = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('activatePlan error:', error);
-    return res.status(500).json({ success: false, error: error.message || 'Failed to activate plan' });
+    console.error('activateFreePlan error:', error);
+    return res.status(500).json({ success: false, error: error.message || 'Failed to activate free plan' });
   }
 };
