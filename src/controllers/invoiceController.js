@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const Invoice = require('../models/Invoice');
 const BillSetting = require('../models/BillSetting');
 const Product = require('../models/Product');
+const cache = require('../utils/cache');
 
 function escapeRegex(text) {
   if (!text) return '';
@@ -111,6 +112,9 @@ exports.createInvoice = async (req, res) => {
       notes: notes ? notes.trim() : '',
       billSnapshot: billSetting,
     });
+
+    // Invalidate dashboard stats cache
+    await cache.del(`stats_${tenant._id}`);
 
     const receiptUrl = `${clientOrigin.replace(/\/$/, '')}/receipt/${invoice._id}`;
     const storeName = billSetting.businessName || tenant.businessName || 'Store';

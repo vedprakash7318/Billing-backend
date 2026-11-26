@@ -16,7 +16,10 @@ const productSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Compound index so uniqueCode is unique per tenant
+// Compound indexes for lightning-fast queries per tenant
 productSchema.index({ tenant: 1, uniqueCode: 1 }, { unique: true });
+productSchema.index({ tenant: 1, isActive: 1, createdAt: -1 });
+productSchema.index({ tenant: 1, category: 1, isActive: 1 });
+productSchema.index({ tenant: 1, title: 1 });
 
 module.exports = mongoose.model('Product', productSchema);

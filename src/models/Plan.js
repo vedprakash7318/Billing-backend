@@ -30,4 +30,7 @@ const planSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// Indexes for fast active plans lookup
+planSchema.index({ isActive: 1, sortOrder: 1, price: 1 });
+
 module.exports = mongoose.model('Plan', planSchema);

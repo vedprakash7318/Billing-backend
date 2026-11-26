@@ -1,10 +1,17 @@
 const Product = require('../models/Product');
 const Category = require('../models/Category');
 const User = require('../models/User');
+const cache = require('../utils/cache');
 
 exports.getClientStats = async (req, res) => {
   try {
     const tenantId = req.tenant._id;
+    const cacheKey = `stats_${tenantId}`;
+
+    const cachedStats = await cache.get(cacheKey);
+    if (cachedStats) {
+      return res.json({ success: true, data: cachedStats, fromCache: true });
+    }
 
     const [totalProducts, activeProducts, totalCategories, totalEmployees, recentProducts] = await Promise.all([
       Product.countDocuments({ tenant: tenantId }),
@@ -26,41 +33,46 @@ exports.getClientStats = async (req, res) => {
       daysRemaining = Math.ceil((end.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
     }
 
+    const statsPayload = {
+      store: {
+        name: req.tenant.businessName,
+        slug: req.tenant.slug,
+        phone: req.tenant.phone,
+        email: req.tenant.email,
+        gstin: req.tenant.gstin,
+        status: req.tenant.status,
+      },
+      subscription: sub
+        ? {
+            planName: sub.plan?.name || 'Active Plan',
+            durationType: sub.plan?.durationType,
+            endDate: sub.endDate,
+            daysRemaining,
+            status: sub.status,
+          }
+        : null,
+      metrics: {
+        totalProducts,
+        activeProducts,
+        totalCategories,
+        totalEmployees,
+      },
+      recentProducts: recentProducts.map((p) => ({
+        id: p._id,
+        title: p.title,
+        uniqueCode: p.uniqueCode,
+        price: p.price,
+        categoryName: p.category?.name || 'Uncategorized',
+        createdAt: p.createdAt,
+      })),
+    };
+
+    // Cache for 30s for ultra-fast Dashboard load
+    await cache.set(cacheKey, statsPayload, 30);
+
     return res.json({
       success: true,
-      data: {
-        store: {
-          name: req.tenant.businessName,
-          slug: req.tenant.slug,
-          phone: req.tenant.phone,
-          email: req.tenant.email,
-          gstin: req.tenant.gstin,
-          status: req.tenant.status,
-        },
-        subscription: sub
-          ? {
-              planName: sub.plan?.name || 'Active Plan',
-              durationType: sub.plan?.durationType,
-              endDate: sub.endDate,
-              daysRemaining,
-              status: sub.status,
-            }
-          : null,
-        metrics: {
-          totalProducts,
-          activeProducts,
-          totalCategories,
-          totalEmployees,
-        },
-        recentProducts: recentProducts.map((p) => ({
-          id: p._id,
-          title: p.title,
-          uniqueCode: p.uniqueCode,
-          price: p.price,
-          categoryName: p.category?.name || 'Uncategorized',
-          createdAt: p.createdAt,
-        })),
-      },
+      data: statsPayload,
     });
   } catch (error) {
     console.error('getClientStats error:', error);

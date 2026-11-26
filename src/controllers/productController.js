@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const Product = require('../models/Product');
 const Category = require('../models/Category');
+const cache = require('../utils/cache');
 
 function escapeRegex(text) {
   if (!text) return '';
@@ -182,6 +183,10 @@ exports.createProduct = async (req, res) => {
 
     const populated = await Product.findById(product._id).populate('category', 'name slug').lean();
 
+    // Invalidate caches
+    await cache.del(`stats_${req.tenant._id}`);
+    await cache.del(`cats_${req.tenant._id}`);
+
     return res.status(201).json({
       success: true,
       message: 'Product created successfully',
@@ -255,6 +260,10 @@ exports.updateProduct = async (req, res) => {
 
     const populated = await Product.findById(product._id).populate('category', 'name slug').lean();
 
+    // Invalidate caches
+    await cache.del(`stats_${req.tenant._id}`);
+    await cache.del(`cats_${req.tenant._id}`);
+
     return res.json({
       success: true,
       message: 'Product updated successfully',
@@ -274,6 +283,11 @@ exports.deleteProduct = async (req, res) => {
     }
 
     await Product.deleteOne({ _id: product._id });
+
+    // Invalidate caches
+    await cache.del(`stats_${req.tenant._id}`);
+    await cache.del(`cats_${req.tenant._id}`);
+
     return res.json({ success: true, message: 'Product deleted successfully' });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message });

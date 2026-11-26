@@ -24,4 +24,9 @@ const tenantSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// Indexes for tenant lookups and subscription resolution
+tenantSchema.index({ status: 1 });
+tenantSchema.index({ currentSubscription: 1 });
+tenantSchema.index({ owner: 1 });
+
 module.exports = mongoose.model('Tenant', tenantSchema);

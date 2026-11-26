@@ -1,5 +1,6 @@
 const Category = require('../models/Category');
 const Product = require('../models/Product');
+const cache = require('../utils/cache');
 
 function escapeRegex(text) {
   if (!text) return '';
@@ -13,6 +14,17 @@ exports.getCategories = async (req, res) => {
     const search = req.query.search ? req.query.search.trim() : '';
     const status = req.query.status;
 
+    // Cache key for unfiltered requests
+    const isUnfiltered = !search && !status;
+    const cacheKey = `cats_${tenantId}`;
+
+    if (isUnfiltered) {
+      const cached = await cache.get(cacheKey);
+      if (cached) {
+        return res.json({ success: true, data: cached, total: cached.length, fromCache: true });
+      }
+    }
+
     const filter = { tenant: tenantId };
     if (search) {
       filter.name = { $regex: escapeRegex(search), $options: 'i' };
@@ -23,19 +35,29 @@ exports.getCategories = async (req, res) => {
       filter.isActive = false;
     }
 
-    const categories = await Category.find(filter).sort({ name: 1 }).lean();
+    // High performance: fetch categories and product counts via single aggregate in parallel
+    const [categories, counts] = await Promise.all([
+      Category.find(filter).sort({ name: 1 }).lean(),
+      Product.aggregate([
+        { $match: { tenant: tenantId } },
+        { $group: { _id: '$category', count: { $sum: 1 } } },
+      ]),
+    ]);
 
-    // Attach product counts to each category
-    const categoriesWithCount = await Promise.all(
-      categories.map(async (cat) => {
-        const productCount = await Product.countDocuments({ tenant: tenantId, category: cat._id });
-        return {
-          ...cat,
-          id: cat._id,
-          productCount,
-        };
-      })
-    );
+    const countMap = {};
+    counts.forEach((c) => {
+      if (c._id) countMap[c._id.toString()] = c.count;
+    });
+
+    const categoriesWithCount = categories.map((cat) => ({
+      ...cat,
+      id: cat._id,
+      productCount: countMap[cat._id.toString()] || 0,
+    }));
+
+    if (isUnfiltered) {
+      await cache.set(cacheKey, categoriesWithCount, 120);
+    }
 
     return res.json({
       success: true,
@@ -87,6 +109,8 @@ exports.createCategory = async (req, res) => {
       isActive: Boolean(isActive),
     });
 
+    await cache.del(`cats_${req.tenant._id}`);
+
     return res.status(201).json({
       success: true,
       message: 'Category created successfully',
@@ -124,6 +148,7 @@ exports.updateCategory = async (req, res) => {
     if (isActive !== undefined) category.isActive = Boolean(isActive);
 
     await category.save();
+    await cache.del(`cats_${req.tenant._id}`);
 
     const productCount = await Product.countDocuments({ tenant: req.tenant._id, category: category._id });
 
@@ -154,6 +179,7 @@ exports.deleteCategory = async (req, res) => {
     }
 
     await Category.deleteOne({ _id: category._id });
+    await cache.del(`cats_${req.tenant._id}`);
 
     return res.json({ success: true, message: 'Category deleted successfully' });
   } catch (error) {

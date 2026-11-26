@@ -11,7 +11,8 @@ const categorySchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Compound index so category name is unique per tenant
+// Compound index so category name is unique per tenant + fast sorting index
 categorySchema.index({ tenant: 1, name: 1 }, { unique: true });
+categorySchema.index({ tenant: 1, isActive: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Category', categorySchema);

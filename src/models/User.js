@@ -22,4 +22,7 @@ const userSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// Fast role and status indexes per tenant
+userSchema.index({ tenant: 1, role: 1, status: 1 });
+
 module.exports = mongoose.model('User', userSchema);

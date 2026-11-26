@@ -4,6 +4,7 @@ const Razorpay = require('razorpay');
 const Tenant = require('../models/Tenant');
 const Plan = require('../models/Plan');
 const Subscription = require('../models/Subscription');
+const cache = require('../utils/cache');
 
 // Initialize Razorpay client helper
 function getRazorpayInstance() {
@@ -73,6 +74,12 @@ function calculateStackedDates(currentSub, plan) {
 exports.getSubscriptionOverview = async (req, res) => {
   try {
     const tenantId = req.tenant._id;
+    const cacheKey = `sub_overview_${tenantId}`;
+
+    const cachedData = await cache.get(cacheKey);
+    if (cachedData) {
+      return res.json({ success: true, data: cachedData, fromCache: true });
+    }
 
     const [tenant, availablePlans, history] = await Promise.all([
       Tenant.findById(tenantId)
@@ -94,6 +101,7 @@ exports.getSubscriptionOverview = async (req, res) => {
     let isExpired = false;
     let canActivate = true;
     let renewalOpenDate = null;
+    let renewalDaysLeft = 0;
 
     if (sub && sub.endDate) {
       const now = new Date();
@@ -103,60 +111,67 @@ exports.getSubscriptionOverview = async (req, res) => {
       if (daysRemaining <= 0 || sub.status === 'EXPIRED') {
         isExpired = true;
         canActivate = true;
-      } else if (sub.plan?.planType === 'FREE_TRIAL') {
-        // Free trial users can upgrade to a paid plan at any time!
-        canActivate = true;
+        daysRemaining = 0;
       } else if (daysRemaining <= 7) {
-        // Paid plan within 7 days of expiry - allowed to renew
+        // Within 7 days of expiry: Allowed to renew
         canActivate = true;
       } else {
-        // More than 7 days remaining on paid plan
+        // More than 7 days remaining on active plan: Activation strictly locked
         canActivate = false;
+        renewalDaysLeft = daysRemaining - 7;
         const openDate = new Date(end);
         openDate.setDate(openDate.getDate() - 7);
         renewalOpenDate = openDate;
       }
     }
 
+    const payload = {
+      currentSubscription: sub
+        ? {
+            id: sub._id,
+            planId: sub.plan?._id,
+            planName: sub.plan?.name || 'Active Plan',
+            durationType: sub.plan?.durationType || 'MONTHLY',
+            durationValue: sub.plan?.durationValue || 1,
+            price: sub.plan?.price || 0,
+            startDate: sub.startDate,
+            endDate: sub.endDate,
+            daysRemaining,
+            status: isExpired ? 'EXPIRED' : sub.status,
+            paymentStatus: sub.paymentStatus,
+            canActivate,
+            renewalOpenDate,
+            renewalDaysLeft,
+          }
+        : null,
+      canActivate,
+      daysRemaining,
+      renewalOpenDate,
+      renewalDaysLeft,
+      razorpayKeyId: process.env.RAZORPAY_KEY_ID || '',
+      availablePlans: availablePlans.map((p) => ({
+        ...p,
+        id: p._id,
+      })),
+      history: history.map((h) => ({
+        id: h._id,
+        planName: h.plan?.name || 'Plan',
+        startDate: h.startDate,
+        endDate: h.endDate,
+        status: h.status,
+        amountPaid: h.amountPaid,
+        paymentMethod: h.paymentMethod,
+        transactionRef: h.transactionRef,
+        createdAt: h.createdAt,
+      })),
+    };
+
+    // Cache for 60 seconds for lightning fast response
+    await cache.set(cacheKey, payload, 60);
+
     return res.json({
       success: true,
-      data: {
-        currentSubscription: sub
-          ? {
-              id: sub._id,
-              planId: sub.plan?._id,
-              planName: sub.plan?.name || 'Active Plan',
-              durationType: sub.plan?.durationType || 'MONTHLY',
-              durationValue: sub.plan?.durationValue || 1,
-              price: sub.plan?.price || 0,
-              startDate: sub.startDate,
-              endDate: sub.endDate,
-              daysRemaining,
-              status: isExpired ? 'EXPIRED' : sub.status,
-              paymentStatus: sub.paymentStatus,
-              canActivate,
-              renewalOpenDate,
-            }
-          : null,
-        canActivate,
-        daysRemaining,
-        razorpayKeyId: process.env.RAZORPAY_KEY_ID || '',
-        availablePlans: availablePlans.map((p) => ({
-          ...p,
-          id: p._id,
-        })),
-        history: history.map((h) => ({
-          id: h._id,
-          planName: h.plan?.name || 'Plan',
-          startDate: h.startDate,
-          endDate: h.endDate,
-          status: h.status,
-          amountPaid: h.amountPaid,
-          paymentMethod: h.paymentMethod,
-          transactionRef: h.transactionRef,
-          createdAt: h.createdAt,
-        })),
-      },
+      data: payload,
     });
   } catch (error) {
     console.error('getSubscriptionOverview error:', error);
@@ -185,6 +200,24 @@ exports.createRazorpayOrder = async (req, res) => {
 
     if (!plan) {
       return res.status(404).json({ success: false, error: 'Selected plan is not available or inactive' });
+    }
+
+    // Strict 7-day rule check on server:
+    const currentSub = tenant.currentSubscription;
+    if (
+      currentSub &&
+      currentSub.endDate &&
+      (currentSub.status === 'ACTIVE' || currentSub.status === 'TRIAL')
+    ) {
+      const now = new Date();
+      const end = new Date(currentSub.endDate);
+      const daysRemaining = Math.ceil((end.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+      if (daysRemaining > 7) {
+        return res.status(400).json({
+          success: false,
+          error: `Aapka plan abhi active hai (${daysRemaining} din bache hain). Renewal expiry ke 7 din pehle se hi open hoga.`,
+        });
+      }
     }
 
     // Check if free trial/plan
@@ -303,6 +336,10 @@ exports.verifyRazorpayPayment = async (req, res) => {
     tenant.status = 'ACTIVE';
     await tenant.save();
 
+    // Invalidate caches
+    await cache.del(`sub_overview_${tenantId}`);
+    await cache.delPattern(`tenant_${tenantId}`);
+
     return res.json({
       success: true,
       message: `🎉 Payment successful! Plan "${plan.name}" activated. Valid until ${endDate.toLocaleDateString('en-IN')}`,
@@ -343,6 +380,33 @@ exports.activateFreePlan = async (req, res) => {
       return res.status(400).json({ success: false, error: 'This is a paid plan. Please complete payment via Razorpay.' });
     }
 
+    // Check if store already has an active plan > 7 days left
+    const currentSub = tenant.currentSubscription;
+    if (
+      currentSub &&
+      currentSub.endDate &&
+      (currentSub.status === 'ACTIVE' || currentSub.status === 'TRIAL')
+    ) {
+      const now = new Date();
+      const end = new Date(currentSub.endDate);
+      const daysRemaining = Math.ceil((end.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+      if (daysRemaining > 7) {
+        return res.status(400).json({
+          success: false,
+          error: `Aapka plan abhi active hai (${daysRemaining} din bache hain). Renewal expiry ke 7 din pehle se hi open hoga.`,
+        });
+      }
+    }
+
+    // Check if free trial already used
+    const previousSubs = await Subscription.countDocuments({ tenant: tenantId });
+    if (previousSubs > 0 && (plan.planType === 'FREE_TRIAL' || plan.price === 0)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Free trial already used on this store. Please select a standard subscription plan.',
+      });
+    }
+
     const { startDate, endDate } = calculateStackedDates(tenant.currentSubscription, plan);
 
     const newSub = await Subscription.create({
@@ -361,6 +425,10 @@ exports.activateFreePlan = async (req, res) => {
     tenant.currentSubscription = newSub._id;
     tenant.status = 'ACTIVE';
     await tenant.save();
+
+    // Invalidate caches
+    await cache.del(`sub_overview_${tenantId}`);
+    await cache.delPattern(`tenant_${tenantId}`);
 
     return res.json({
       success: true,

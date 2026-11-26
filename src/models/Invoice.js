@@ -47,6 +47,10 @@ const invoiceSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// Compound indexes for lightning-fast queries & reporting
 invoiceSchema.index({ tenant: 1, invoiceNumber: 1 }, { unique: true });
+invoiceSchema.index({ tenant: 1, createdAt: -1 });
+invoiceSchema.index({ tenant: 1, paymentMode: 1, createdAt: -1 });
+invoiceSchema.index({ tenant: 1, customerPhone: 1 });
 
 module.exports = mongoose.model('Invoice', invoiceSchema);

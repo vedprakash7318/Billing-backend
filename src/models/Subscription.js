@@ -28,4 +28,8 @@ const subscriptionSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// Indexes for fast subscription lookups and expiry checks
+subscriptionSchema.index({ tenant: 1, status: 1, endDate: -1 });
+subscriptionSchema.index({ tenant: 1, createdAt: -1 });
+
 module.exports = mongoose.model('Subscription', subscriptionSchema);
