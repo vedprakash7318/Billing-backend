@@ -154,6 +154,10 @@ exports.createPlan = async (req, res) => {
       maxProducts: Number(maxProducts) || -1,
       maxUsers: Number(maxUsers) || -1,
       features: Array.isArray(features) ? features : ['all_permissions'],
+      isSmsEnabled: Boolean(req.body.isSmsEnabled),
+      freeSmsQuota: Math.max(0, Number(req.body.freeSmsQuota) || 0),
+      isWhatsAppEnabled: Boolean(req.body.isWhatsAppEnabled),
+      freeWhatsAppQuota: Math.max(0, Number(req.body.freeWhatsAppQuota) || 0),
     });
 
     try {

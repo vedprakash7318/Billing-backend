@@ -54,6 +54,12 @@ exports.getClientStats = async (req, res) => {
         gstin: req.tenant.gstin,
         status: req.tenant.status,
       },
+      quotas: {
+        smsBalance: req.tenant.smsBalance || 0,
+        smsTotalCredited: req.tenant.smsTotalCredited || 0,
+        whatsAppBalance: req.tenant.whatsAppBalance || 0,
+        whatsAppTotalCredited: req.tenant.whatsAppTotalCredited || 0,
+      },
       subscription: sub
         ? {
             planName: sub.plan?.name || 'Active Plan',

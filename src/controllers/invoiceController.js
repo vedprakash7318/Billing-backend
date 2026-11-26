@@ -2,6 +2,9 @@ const mongoose = require('mongoose');
 const Invoice = require('../models/Invoice');
 const BillSetting = require('../models/BillSetting');
 const Product = require('../models/Product');
+const Tenant = require('../models/Tenant');
+const GlobalSetting = require('../models/GlobalSetting');
+const MessageLog = require('../models/MessageLog');
 const cache = require('../utils/cache');
 
 function escapeRegex(text) {
@@ -41,6 +44,40 @@ exports.createInvoice = async (req, res) => {
         success: false,
         error: `Customer mobile number is required to send bill via ${deliveryMethod}`,
       });
+    }
+
+    // Check Global Service Toggles & Tenant Quota Balances
+    const [liveTenant, globalSetting] = await Promise.all([
+      Tenant.findById(tenant._id),
+      GlobalSetting.findOne().lean(),
+    ]);
+
+    if (deliveryMethod === 'SMS') {
+      if (globalSetting?.isSmsGloballyEnabled === false) {
+        return res.status(400).json({
+          success: false,
+          error: globalSetting?.smsDisabledNotice || 'SMS service is temporarily paused by Super Admin for maintenance.',
+        });
+      }
+      if ((liveTenant?.smsBalance || 0) <= 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Your store SMS message balance is 0. Please recharge SMS pack from Subscription & Add-On Packs.',
+        });
+      }
+    } else if (deliveryMethod === 'WHATSAPP') {
+      if (globalSetting?.isWhatsAppGloballyEnabled === false) {
+        return res.status(400).json({
+          success: false,
+          error: globalSetting?.whatsAppDisabledNotice || 'WhatsApp service is temporarily paused by Super Admin for maintenance.',
+        });
+      }
+      if ((liveTenant?.whatsAppBalance || 0) <= 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Your store WhatsApp message balance is 0. Please recharge WhatsApp pack from Subscription & Add-On Packs.',
+        });
+      }
     }
 
     // Validate items and calculate subtotal
@@ -121,14 +158,74 @@ exports.createInvoice = async (req, res) => {
     const messageText = `Thank you for shopping at ${storeName}! Your Bill #${invoice.invoiceNumber} for Rs.${invoice.grandTotal.toFixed(2)} (${paymentMode}) is ready. View receipt: ${receiptUrl}`;
 
     let whatsappUrl = null;
+    let quotaDeducted = false;
+
     if (deliveryMethod === 'SMS') {
-      // Log SMS API dispatch (ready for Twilio / Fast2SMS / MSG91 integration)
-      console.log(`[SMS DISPATCH] To: ${invoice.customerPhone} | Message: ${messageText}`);
+      try {
+        console.log(`[SMS DISPATCH] To: ${invoice.customerPhone} | Message: ${messageText}`);
+        // Deduct 1 SMS credit ONLY on success
+        await Tenant.findByIdAndUpdate(tenant._id, { $inc: { smsBalance: -1 } });
+        await MessageLog.create({
+          tenant: tenant._id,
+          invoice: invoice._id,
+          type: 'SMS',
+          recipient: invoice.customerPhone,
+          message: messageText,
+          status: 'DELIVERED',
+          costDeducted: 1,
+        });
+        quotaDeducted = true;
+      } catch (smsErr) {
+        console.error('SMS dispatch error:', smsErr);
+        await MessageLog.create({
+          tenant: tenant._id,
+          invoice: invoice._id,
+          type: 'SMS',
+          recipient: invoice.customerPhone,
+          message: messageText,
+          status: 'FAILED',
+          failureReason: smsErr.message,
+          costDeducted: 0,
+        });
+      }
     } else if (deliveryMethod === 'WHATSAPP') {
-      const cleanPhone = invoice.customerPhone.replace(/[^0-9]/g, '');
-      const phoneWithCountry = cleanPhone.length === 10 ? `91${cleanPhone}` : cleanPhone;
-      whatsappUrl = `https://wa.me/${phoneWithCountry}?text=${encodeURIComponent(messageText)}`;
-      console.log(`[WHATSAPP DISPATCH] To: ${phoneWithCountry} | Link: ${receiptUrl}`);
+      try {
+        const cleanPhone = invoice.customerPhone.replace(/[^0-9]/g, '');
+        const phoneWithCountry = cleanPhone.length === 10 ? `91${cleanPhone}` : cleanPhone;
+        whatsappUrl = `https://wa.me/${phoneWithCountry}?text=${encodeURIComponent(messageText)}`;
+        console.log(`[WHATSAPP DISPATCH] To: ${phoneWithCountry} | Link: ${receiptUrl}`);
+
+        // Deduct 1 WhatsApp credit ONLY on success
+        await Tenant.findByIdAndUpdate(tenant._id, { $inc: { whatsAppBalance: -1 } });
+        await MessageLog.create({
+          tenant: tenant._id,
+          invoice: invoice._id,
+          type: 'WHATSAPP',
+          recipient: phoneWithCountry,
+          message: messageText,
+          status: 'DELIVERED',
+          costDeducted: 1,
+        });
+        quotaDeducted = true;
+      } catch (waErr) {
+        console.error('WhatsApp dispatch error:', waErr);
+        await MessageLog.create({
+          tenant: tenant._id,
+          invoice: invoice._id,
+          type: 'WHATSAPP',
+          recipient: invoice.customerPhone,
+          message: messageText,
+          status: 'FAILED',
+          failureReason: waErr.message,
+          costDeducted: 0,
+        });
+      }
+    }
+
+    // Invalidate tenant cache if quota was consumed
+    if (quotaDeducted) {
+      await cache.del(`sub_overview_${tenant._id}`);
+      await cache.del(`stats_${tenant._id}`);
     }
 
     return res.status(201).json({
@@ -136,13 +233,14 @@ exports.createInvoice = async (req, res) => {
       message:
         deliveryMethod === 'PRINT'
           ? 'Bill created and ready to print'
-          : `Bill saved and ${deliveryMethod} receipt sent to ${invoice.customerPhone}`,
+          : `Bill saved and ${deliveryMethod} receipt prepared for ${invoice.customerPhone}`,
       data: {
         ...invoice.toObject(),
         id: invoice._id,
         receiptUrl,
         whatsappUrl,
         messageText,
+        quotaDeducted,
       },
     });
   } catch (error) {
@@ -217,6 +315,7 @@ exports.getInvoiceById = async (req, res) => {
   }
 };
 
+
 // PUBLIC: Get Digital Receipt by Invoice ID (for SMS / WhatsApp link)
 exports.getPublicReceipt = async (req, res) => {
   try {
@@ -235,3 +334,102 @@ exports.getPublicReceipt = async (req, res) => {
     return res.status(500).json({ success: false, error: error.message });
   }
 };
+
+// POST Send / Re-send Receipt via SMS or WhatsApp for an existing invoice
+exports.sendInvoiceReceipt = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { method = 'WHATSAPP', phone, clientOrigin = 'http://localhost:3002' } = req.body;
+
+    const [invoice, tenant, globalSetting] = await Promise.all([
+      Invoice.findOne({ _id: id, tenant: req.tenant._id }),
+      Tenant.findById(req.tenant._id),
+      GlobalSetting.findOne().lean(),
+    ]);
+
+    if (!invoice) {
+      return res.status(404).json({ success: false, error: 'Invoice not found' });
+    }
+
+    const targetPhone = phone || invoice.customerPhone;
+    if (!targetPhone || targetPhone.trim().length < 8) {
+      return res.status(400).json({ success: false, error: 'Valid customer phone number is required' });
+    }
+
+    const receiptUrl = `${clientOrigin.replace(/\/$/, '')}/receipt/${invoice._id}`;
+    const storeName = req.tenant.businessName || 'Store';
+    const messageText = `Thank you for shopping at ${storeName}! Your Bill #${invoice.invoiceNumber} for Rs.${invoice.grandTotal.toFixed(2)} is ready. View receipt: ${receiptUrl}`;
+
+    if (method === 'SMS') {
+      if (globalSetting?.isSmsGloballyEnabled === false) {
+        return res.status(400).json({
+          success: false,
+          error: globalSetting?.smsDisabledNotice || 'SMS service is temporarily paused by Super Admin for maintenance.',
+        });
+      }
+      if ((tenant?.smsBalance || 0) <= 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Store SMS balance is 0. Please recharge SMS pack from Subscription & Add-Ons.',
+        });
+      }
+
+      console.log(`[SMS SEND] To: ${targetPhone} | Message: ${messageText}`);
+      await Tenant.findByIdAndUpdate(tenant._id, { $inc: { smsBalance: -1 } });
+      await MessageLog.create({
+        tenant: tenant._id,
+        invoice: invoice._id,
+        type: 'SMS',
+        recipient: targetPhone,
+        message: messageText,
+        status: 'DELIVERED',
+        costDeducted: 1,
+      });
+
+      return res.json({
+        success: true,
+        message: `SMS sent successfully to ${targetPhone}`,
+        newBalance: Math.max(0, (tenant.smsBalance || 1) - 1),
+      });
+    } else {
+      if (globalSetting?.isWhatsAppGloballyEnabled === false) {
+        return res.status(400).json({
+          success: false,
+          error: globalSetting?.whatsAppDisabledNotice || 'WhatsApp messaging is temporarily paused by Super Admin for maintenance.',
+        });
+      }
+      if ((tenant?.whatsAppBalance || 0) <= 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Store WhatsApp balance is 0. Please recharge WhatsApp pack from Subscription & Add-Ons.',
+        });
+      }
+
+      const cleanPhone = targetPhone.replace(/[^0-9]/g, '');
+      const phoneWithCountry = cleanPhone.length === 10 ? `91${cleanPhone}` : cleanPhone;
+      const whatsappUrl = `https://wa.me/${phoneWithCountry}?text=${encodeURIComponent(messageText)}`;
+
+      await Tenant.findByIdAndUpdate(tenant._id, { $inc: { whatsAppBalance: -1 } });
+      await MessageLog.create({
+        tenant: tenant._id,
+        invoice: invoice._id,
+        type: 'WHATSAPP',
+        recipient: phoneWithCountry,
+        message: messageText,
+        status: 'DELIVERED',
+        costDeducted: 1,
+      });
+
+      return res.json({
+        success: true,
+        message: `WhatsApp receipt ready for ${phoneWithCountry}`,
+        whatsappUrl,
+        newBalance: Math.max(0, (tenant.whatsAppBalance || 1) - 1),
+      });
+    }
+  } catch (error) {
+    console.error('sendInvoiceReceipt error:', error);
+    return res.status(500).json({ success: false, error: error.message || 'Failed to send receipt' });
+  }
+};
+

@@ -109,6 +109,15 @@ const cache = {
     }
   },
 
+  async flush() {
+    try {
+      if (isRedisConnected && redisClient) {
+        await redisClient.flushdb();
+      }
+    } catch {}
+    memoryStore.clear();
+  },
+
   isRedisActive() {
     return isRedisConnected;
   },

@@ -25,6 +25,11 @@ const planSchema = new mongoose.Schema(
     maxProducts: { type: Number, default: -1 },
     maxUsers: { type: Number, default: -1 },
     features: [{ type: String }],
+    // SMS & WhatsApp quota configurations
+    isSmsEnabled: { type: Boolean, default: false },
+    freeSmsQuota: { type: Number, default: 0 },
+    isWhatsAppEnabled: { type: Boolean, default: false },
+    freeWhatsAppQuota: { type: Number, default: 0 },
     sortOrder: { type: Number, default: 0 },
   },
   { timestamps: true }

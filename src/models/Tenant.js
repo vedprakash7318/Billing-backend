@@ -20,6 +20,11 @@ const tenantSchema = new mongoose.Schema(
       default: 'ACTIVE',
     },
     currentSubscription: { type: mongoose.Schema.Types.ObjectId, ref: 'Subscription' },
+    // Live SMS & WhatsApp balance quotas
+    smsBalance: { type: Number, default: 0 },
+    smsTotalCredited: { type: Number, default: 0 },
+    whatsAppBalance: { type: Number, default: 0 },
+    whatsAppTotalCredited: { type: Number, default: 0 },
   },
   { timestamps: true }
 );

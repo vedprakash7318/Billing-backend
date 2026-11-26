@@ -16,6 +16,8 @@ const adminBillSettingRoutes = require('./routes/adminBillSettingRoutes');
 const adminInvoiceRoutes = require('./routes/adminInvoiceRoutes');
 const adminEmployeeRoutes = require('./routes/adminEmployeeRoutes');
 const adminSubscriptionRoutes = require('./routes/adminSubscriptionRoutes');
+const superAdminSettingsRoutes = require('./routes/superAdminSettingsRoutes');
+const superAdminAddOnRoutes = require('./routes/superAdminAddOnRoutes');
 const invoiceController = require('./controllers/invoiceController');
 
 const app = express();
@@ -39,6 +41,8 @@ app.use('/api/admin/bill-settings', adminBillSettingRoutes);
 app.use('/api/admin/invoices', adminInvoiceRoutes);
 app.use('/api/admin/employees', adminEmployeeRoutes);
 app.use('/api/admin/subscription', adminSubscriptionRoutes);
+app.use('/api/super-admin/settings', superAdminSettingsRoutes);
+app.use('/api/super-admin/addons', superAdminAddOnRoutes);
 
 // Public Digital Receipt Route (for SMS / WhatsApp link)
 app.get('/api/public/receipt/:id', invoiceController.getPublicReceipt);
