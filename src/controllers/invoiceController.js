@@ -133,12 +133,21 @@ exports.createInvoice = async (req, res) => {
       exists = await Invoice.findOne({ tenant: tenant._id, invoiceNumber });
     }
 
-    const billedBy = {
+    let billedBy = {
       user: req.user?._id || null,
-      name: req.user?.name || (req.user?.role === 'STAFF' ? 'Store Staff' : 'Store Admin'),
+      name: req.user?.name || (req.user?.role === 'STAFF' ? 'Staff' : 'Admin'),
       role: req.user?.role || 'ADMIN',
       designation: req.user?.designation || (req.user?.role === 'STAFF' ? 'Cashier' : 'Store Admin'),
     };
+
+    if (req.body.billedBy && req.body.billedBy.name) {
+      billedBy = {
+        user: req.body.billedBy.user || req.user?._id || null,
+        name: req.body.billedBy.name.trim(),
+        role: req.body.billedBy.role || req.user?.role || 'STAFF',
+        designation: req.body.billedBy.designation || 'Cashier',
+      };
+    }
 
     const invoice = await Invoice.create({
       invoiceNumber,
