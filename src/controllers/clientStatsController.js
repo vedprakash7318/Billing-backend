@@ -303,8 +303,13 @@ exports.getClientStats = async (req, res) => {
         customerName: inv.customerName || 'Walk-in Customer',
         customerPhone: inv.customerPhone || '',
         grandTotal: inv.grandTotal,
+        subtotal: inv.subtotal,
+        discount: inv.discount,
         paymentMode: inv.paymentMode,
         createdAt: inv.createdAt,
+        items: inv.items || [],
+        billedBy: inv.billedBy || { name: 'Store Admin', role: 'ADMIN', designation: 'Store Admin' },
+        billSnapshot: inv.billSnapshot || {},
       })),
       recentProducts: recentProducts.map((p) => ({
         id: p._id,

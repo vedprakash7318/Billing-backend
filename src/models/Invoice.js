@@ -41,6 +41,13 @@ const invoiceSchema = new mongoose.Schema(
       default: 'PRINTED',
     },
     notes: { type: String, trim: true, default: '' },
+    // Cashier / Employee who generated this bill
+    billedBy: {
+      user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      name: { type: String, default: 'Store Admin' },
+      role: { type: String, default: 'ADMIN' },
+      designation: { type: String, default: 'Cashier' },
+    },
     // Snapshot of header/footer at the moment bill was printed
     billSnapshot: { type: Object, default: {} },
   },

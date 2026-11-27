@@ -133,6 +133,13 @@ exports.createInvoice = async (req, res) => {
       exists = await Invoice.findOne({ tenant: tenant._id, invoiceNumber });
     }
 
+    const billedBy = {
+      user: req.user?._id || null,
+      name: req.user?.name || (req.user?.role === 'STAFF' ? 'Store Staff' : 'Store Admin'),
+      role: req.user?.role || 'ADMIN',
+      designation: req.user?.designation || (req.user?.role === 'STAFF' ? 'Cashier' : 'Store Admin'),
+    };
+
     const invoice = await Invoice.create({
       invoiceNumber,
       tenant: tenant._id,
@@ -148,6 +155,7 @@ exports.createInvoice = async (req, res) => {
       deliveryMethod,
       deliveryStatus: deliveryMethod === 'PRINT' ? 'PRINTED' : 'SENT',
       notes: notes ? notes.trim() : '',
+      billedBy,
       billSnapshot: billSetting,
     });
 
