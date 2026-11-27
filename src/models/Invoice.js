@@ -22,7 +22,8 @@ const invoiceSchema = new mongoose.Schema(
     grandTotal: { type: Number, required: true, default: 0 },
     paymentMode: {
       type: String,
-      enum: ['CASH', 'UPI', 'CARD', 'CREDIT', 'SPLIT'],
+      required: true,
+      trim: true,
       default: 'CASH',
     },
     paymentStatus: {
