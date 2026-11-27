@@ -128,3 +128,107 @@ exports.getMe = async (req, res) => {
     user: req.user,
   });
 };
+
+// Get Full Profile (User + Store/Tenant)
+exports.getProfile = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).select('-passwordHash');
+    if (!user) return res.status(404).json({ success: false, error: 'User not found' });
+
+    let tenant = null;
+    if (user.role === 'STAFF' && user.tenant) {
+      tenant = await Tenant.findById(user.tenant).populate({
+        path: 'currentSubscription',
+        populate: { path: 'plan' },
+      });
+    } else {
+      tenant = await Tenant.findOne({ owner: user._id }).populate({
+        path: 'currentSubscription',
+        populate: { path: 'plan' },
+      });
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        user,
+        tenant,
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// Update Profile & Store Details
+exports.updateProfile = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    if (!user) return res.status(404).json({ success: false, error: 'User not found' });
+
+    const {
+      name,
+      phone,
+      password,
+      businessName,
+      address,
+      city,
+      state,
+      pincode,
+      gstin,
+    } = req.body;
+
+    if (name && name.trim()) user.name = name.trim();
+    if (phone !== undefined) user.phone = phone.trim();
+
+    if (password && password.trim().length >= 4) {
+      const salt = await bcrypt.genSalt(10);
+      user.passwordHash = await bcrypt.hash(password.trim(), salt);
+    }
+
+    await user.save();
+
+    // If user owns a tenant or is an admin, update tenant
+    let tenant = null;
+    if (user.role === 'ADMIN' || user.role === 'SUPER_ADMIN') {
+      tenant = await Tenant.findOne({ owner: user._id });
+      if (tenant) {
+        if (businessName && businessName.trim()) tenant.businessName = businessName.trim();
+        if (address !== undefined) tenant.address = address.trim();
+        if (city !== undefined) tenant.city = city.trim();
+        if (state !== undefined) tenant.state = state.trim();
+        if (pincode !== undefined) tenant.pincode = pincode.trim();
+        if (gstin !== undefined) tenant.gstin = gstin.trim().toUpperCase();
+        if (phone !== undefined) tenant.phone = phone.trim();
+        await tenant.save();
+
+        // Also sync with BillSetting so receipt reflects the updated businessName/address/phone/gstin
+        const BillSetting = require('../models/BillSetting');
+        await BillSetting.updateOne(
+          { tenant: tenant._id },
+          {
+            $set: {
+              businessName: tenant.businessName,
+              address: tenant.address,
+              phone: tenant.phone,
+              gstin: tenant.gstin,
+            },
+          }
+        );
+      }
+    }
+
+    const updatedUser = await User.findById(user._id).select('-passwordHash');
+
+    return res.json({
+      success: true,
+      message: 'Profile updated successfully',
+      data: {
+        user: updatedUser,
+        tenant,
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
