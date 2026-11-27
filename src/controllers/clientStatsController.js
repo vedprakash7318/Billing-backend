@@ -184,6 +184,51 @@ exports.getClientStats = async (req, res) => {
       ? Math.round(((todayCount - yesterdayCount) / yesterdayCount) * 100)
       : todayCount > 0 ? 100 : 0;
 
+    // Standard retail estimated profit margin (~22%)
+    const profitMargin = 0.22;
+    const todayAov = todayCount > 0 ? Math.round(todaySales / todayCount) : 0;
+    const yesterdayAov = yesterdayCount > 0 ? Math.round(yesterdaySales / yesterdayCount) : 0;
+    const weekAov = weekCount > 0 ? Math.round(weekSales / weekCount) : 0;
+    const monthAov = monthCount > 0 ? Math.round(monthSales / monthCount) : 0;
+    const yearAov = yearCount > 0 ? Math.round(yearSales / yearCount) : 0;
+
+    const dayComparisonChart = [
+      {
+        label: 'Yesterday',
+        date: getLocalDateStr(startOfYesterday),
+        sales: yesterdaySales,
+        count: yesterdayCount,
+        profit: Math.round(yesterdaySales * profitMargin),
+        aov: yesterdayAov,
+      },
+      {
+        label: 'Today',
+        date: getLocalDateStr(startOfToday),
+        sales: todaySales,
+        count: todayCount,
+        profit: Math.round(todaySales * profitMargin),
+        aov: todayAov,
+      },
+    ];
+
+    const weekChartData = Object.values(weekMap).map((d) => ({
+      ...d,
+      profit: Math.round(d.sales * profitMargin),
+      aov: d.count > 0 ? Math.round(d.sales / d.count) : 0,
+    }));
+
+    const monthChartData = Object.values(monthMap).map((d) => ({
+      ...d,
+      profit: Math.round(d.sales * profitMargin),
+      aov: d.count > 0 ? Math.round(d.sales / d.count) : 0,
+    }));
+
+    const yearChartData = Object.values(yearMap).map((d) => ({
+      ...d,
+      profit: Math.round(d.sales * profitMargin),
+      aov: d.count > 0 ? Math.round(d.sales / d.count) : 0,
+    }));
+
     // Subscription status
     const sub = req.tenant.currentSubscription;
     let daysRemaining = null;
@@ -225,16 +270,52 @@ exports.getClientStats = async (req, res) => {
         createdAt: req.tenant.createdAt,
         isLivePosReady: true,
       },
+      periodStats: {
+        day: {
+          revenue: todaySales,
+          bills: todayCount,
+          aov: todayAov,
+          profit: Math.round(todaySales * profitMargin),
+          prevRevenue: yesterdaySales,
+          prevBills: yesterdayCount,
+          prevAov: yesterdayAov,
+          prevProfit: Math.round(yesterdaySales * profitMargin),
+          difference: salesDifference,
+          growthPercent,
+          countDifference,
+          countGrowthPercent,
+        },
+        week: {
+          revenue: weekSales,
+          bills: weekCount,
+          aov: weekAov,
+          profit: Math.round(weekSales * profitMargin),
+        },
+        month: {
+          revenue: monthSales,
+          bills: monthCount,
+          aov: monthAov,
+          profit: Math.round(monthSales * profitMargin),
+        },
+        year: {
+          revenue: yearSales,
+          bills: yearCount,
+          aov: yearAov,
+          profit: Math.round(yearSales * profitMargin),
+        },
+      },
       salesComparison: {
         today: {
           sales: todaySales,
           count: todayCount,
-          aov: todayCount > 0 ? Math.round(todaySales / todayCount) : 0,
+          aov: todayAov,
+          profit: Math.round(todaySales * profitMargin),
         },
         yesterday: {
           sales: yesterdaySales,
           count: yesterdayCount,
-          aov: yesterdayCount > 0 ? Math.round(yesterdaySales / yesterdayCount) : 0,
+          aov: yesterdayAov,
+          profit: Math.round(yesterdaySales * profitMargin),
         },
         difference: salesDifference,
         growthPercent,
@@ -242,9 +323,10 @@ exports.getClientStats = async (req, res) => {
         countGrowthPercent,
       },
       charts: {
-        week: Object.values(weekMap),
-        month: Object.values(monthMap),
-        year: Object.values(yearMap),
+        day: dayComparisonChart,
+        week: weekChartData,
+        month: monthChartData,
+        year: yearChartData,
       },
       paymentBreakdown: Object.values(paymentBreakdown).map((p) => ({
         ...p,
