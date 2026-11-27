@@ -2,8 +2,8 @@ const PaymentMode = require('../models/PaymentMode');
 
 const PLATFORM_SUGGESTIONS = [
   { name: 'Cash', code: 'CASH', icon: 'Banknote', color: 'text-emerald-600', description: 'Cash payment at counter' },
-  { name: 'UPI / QR', code: 'UPI', icon: 'QrCode', color: 'text-purple-600', description: 'Google Pay, PhonePe, Paytm QR' },
-  { name: 'Credit / Debit Card', code: 'CARD', icon: 'CreditCard', color: 'text-blue-600', description: 'Card swipe / POS terminal' },
+  { name: 'UPI', code: 'UPI', icon: 'QrCode', color: 'text-purple-600', description: 'Google Pay, PhonePe, Paytm QR' },
+  { name: 'Card', code: 'CARD', icon: 'CreditCard', color: 'text-blue-600', description: 'Card swipe / POS terminal' },
   { name: 'Credit (Khata / Udhar)', code: 'CREDIT', icon: 'BookOpen', color: 'text-amber-600', description: 'Customer store credit book' },
   { name: 'Paytm / PhonePe Direct', code: 'PAYTM', icon: 'Smartphone', color: 'text-cyan-600', description: 'Direct mobile wallet' },
   { name: 'Bank Transfer / NEFT', code: 'BANK_TRANSFER', icon: 'Landmark', color: 'text-indigo-600', description: 'Direct account transfer' },
@@ -17,8 +17,8 @@ async function ensureDefaultModesForTenant(tenantId) {
   if (count === 0) {
     const initialDefaults = [
       { tenant: tenantId, name: 'Cash', code: 'CASH', icon: 'Banknote', color: 'text-emerald-600', isActive: true, isDefault: true, sortOrder: 1 },
-      { tenant: tenantId, name: 'UPI / QR', code: 'UPI', icon: 'QrCode', color: 'text-purple-600', isActive: true, isDefault: false, sortOrder: 2 },
-      { tenant: tenantId, name: 'Credit / Debit Card', code: 'CARD', icon: 'CreditCard', color: 'text-blue-600', isActive: true, isDefault: false, sortOrder: 3 },
+      { tenant: tenantId, name: 'UPI', code: 'UPI', icon: 'QrCode', color: 'text-purple-600', isActive: true, isDefault: false, sortOrder: 2 },
+      { tenant: tenantId, name: 'Card', code: 'CARD', icon: 'CreditCard', color: 'text-blue-600', isActive: true, isDefault: false, sortOrder: 3 },
     ];
     await PaymentMode.insertMany(initialDefaults);
   }
@@ -36,8 +36,15 @@ exports.getPaymentModes = async (req, res) => {
       .sort({ sortOrder: 1, createdAt: 1 })
       .lean();
 
-    const existingCodes = new Set(modes.map((m) => m.code));
-    const availableSuggestions = PLATFORM_SUGGESTIONS.filter((s) => !existingCodes.has(s.code));
+    const existingCodes = new Set(modes.map((m) => (m.code || '').toUpperCase()));
+    const existingNames = new Set(modes.map((m) => (m.name || '').toUpperCase().trim()));
+
+    const availableSuggestions = PLATFORM_SUGGESTIONS.filter((s) => {
+      const codeMatch = existingCodes.has(s.code.toUpperCase());
+      const nameMatch = existingNames.has(s.name.toUpperCase().trim()) ||
+        (s.code === 'UPI' && Array.from(existingNames).some((n) => n.includes('UPI')));
+      return !codeMatch && !nameMatch;
+    });
 
     return res.json({
       success: true,
