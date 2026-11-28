@@ -1,3 +1,11 @@
+const dns = require('dns');
+// Set robust public DNS resolvers (Google & Cloudflare) to prevent Windows / ISP querySrv ECONNREFUSED errors
+try {
+  dns.setServers(['8.8.8.8', '8.8.4.4', '1.1.1.1', '1.0.0.1']);
+} catch (e) {
+  console.warn('DNS server override warning:', e.message);
+}
+
 const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 const express = require('express');
@@ -56,16 +64,34 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', service: 'Billing SaaS Backend (Node+Express+Mongo)' });
 });
 
-// Connect to MongoDB and start Express server
-mongoose
-  .connect(MONGODB_URI)
-  .then(() => {
-    console.log('✓ Connected to MongoDB:', MONGODB_URI);
-    app.listen(PORT, () => {
-      console.log(`✓ Billing SaaS Express Server listening on http://localhost:${PORT}`);
-    });
-  })
-  .catch((err) => {
-    console.error('MongoDB Connection Error:', err);
-    process.exit(1);
-  });
+// Connect to MongoDB with retry & resilient DNS
+async function startServer() {
+  const maxRetries = 5;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`Connecting to MongoDB (attempt ${attempt}/${maxRetries})...`);
+      await mongoose.connect(MONGODB_URI, {
+        serverSelectionTimeoutMS: 10000,
+      });
+      console.log('✓ Connected to MongoDB Atlas successfully');
+      app.listen(PORT, () => {
+        console.log(`✓ Billing SaaS Express Server listening on http://localhost:${PORT}`);
+      });
+      return;
+    } catch (err) {
+      console.error(`MongoDB Connection Error (attempt ${attempt}):`, err.message || err);
+      if (attempt === maxRetries) {
+        console.error('CRITICAL: Unable to connect to MongoDB Atlas after multiple retries.');
+        process.exit(1);
+      }
+      // Re-apply Google & Cloudflare DNS before retrying
+      try {
+        dns.setServers(['8.8.8.8', '8.8.4.4', '1.1.1.1']);
+      } catch {}
+      console.log('Retrying connection in 3 seconds...');
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+    }
+  }
+}
+
+startServer();
