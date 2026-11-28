@@ -87,7 +87,7 @@ async function startServer() {
       // Re-apply Google & Cloudflare DNS before retrying
       try {
         dns.setServers(['8.8.8.8', '8.8.4.4', '1.1.1.1']);
-      } catch {}
+      } catch { }
       console.log('Retrying connection in 3 seconds...');
       await new Promise((resolve) => setTimeout(resolve, 3000));
     }
