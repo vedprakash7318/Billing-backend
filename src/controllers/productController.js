@@ -54,7 +54,9 @@ exports.getProducts = async (req, res) => {
       ];
     }
 
-    if (categoryId && categoryId !== 'ALL' && mongoose.Types.ObjectId.isValid(categoryId)) {
+    if (categoryId === 'UNCATEGORIZED' || categoryId === 'NONE') {
+      filter.$or = [{ category: null }, { category: { $exists: false } }];
+    } else if (categoryId && categoryId !== 'ALL' && mongoose.Types.ObjectId.isValid(categoryId)) {
       filter.category = categoryId;
     }
 
@@ -142,17 +144,25 @@ exports.createProduct = async (req, res) => {
     if (price === undefined || price === '' || isNaN(Number(price)) || Number(price) < 0) {
       return res.status(400).json({ success: false, error: 'Valid price (positive number) is required' });
     }
-    if (!categoryId || !mongoose.Types.ObjectId.isValid(categoryId)) {
-      return res.status(400).json({ success: false, error: 'Please select a valid category' });
-    }
 
     const numPrice = Number(price);
     const numMrp = mrp !== undefined && mrp !== '' && !isNaN(Number(mrp)) ? Number(mrp) : numPrice;
 
-    // Verify category exists and belongs to tenant
-    const category = await Category.findOne({ _id: categoryId, tenant: req.tenant._id });
-    if (!category) {
-      return res.status(404).json({ success: false, error: 'Selected category does not exist' });
+    if (numMrp > 0 && numPrice > numMrp) {
+      return res.status(400).json({
+        success: false,
+        error: `Selling price (₹${numPrice}) cannot be greater than MRP (₹${numMrp})`,
+      });
+    }
+
+    // Category is optional
+    let assignedCategoryId = null;
+    if (categoryId && typeof categoryId === 'string' && categoryId.trim() && mongoose.Types.ObjectId.isValid(categoryId.trim())) {
+      const category = await Category.findOne({ _id: categoryId.trim(), tenant: req.tenant._id });
+      if (!category) {
+        return res.status(404).json({ success: false, error: 'Selected category does not exist' });
+      }
+      assignedCategoryId = category._id;
     }
 
     // Auto or custom uniqueCode
@@ -175,7 +185,7 @@ exports.createProduct = async (req, res) => {
       description: description ? description.trim() : '',
       price: numPrice,
       mrp: numMrp,
-      category: category._id,
+      category: assignedCategoryId,
       image: image ? image.trim() : '',
       tenant: req.tenant._id,
       isActive: Boolean(isActive),
@@ -228,15 +238,23 @@ exports.updateProduct = async (req, res) => {
       }
     }
 
-    if (categoryId) {
-      if (!mongoose.Types.ObjectId.isValid(categoryId)) {
-        return res.status(400).json({ success: false, error: 'Invalid category ID' });
+    if (product.mrp > 0 && product.price > product.mrp) {
+      return res.status(400).json({
+        success: false,
+        error: `Selling price (₹${product.price}) cannot be greater than MRP (₹${product.mrp})`,
+      });
+    }
+
+    if (categoryId !== undefined) {
+      if (!categoryId || categoryId === 'null' || categoryId === '' || categoryId === 'NONE') {
+        product.category = null;
+      } else if (mongoose.Types.ObjectId.isValid(categoryId)) {
+        const cat = await Category.findOne({ _id: categoryId, tenant: req.tenant._id });
+        if (!cat) {
+          return res.status(404).json({ success: false, error: 'Category not found' });
+        }
+        product.category = cat._id;
       }
-      const cat = await Category.findOne({ _id: categoryId, tenant: req.tenant._id });
-      if (!cat) {
-        return res.status(404).json({ success: false, error: 'Category not found' });
-      }
-      product.category = cat._id;
     }
 
     if (uniqueCode && uniqueCode.trim()) {

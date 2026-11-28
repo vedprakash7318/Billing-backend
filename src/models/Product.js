@@ -8,7 +8,7 @@ const productSchema = new mongoose.Schema(
     description: { type: String, trim: true, default: '' },
     price: { type: Number, required: true, min: 0, default: 0 },
     mrp: { type: Number, min: 0, default: 0 },
-    category: { type: mongoose.Schema.Types.ObjectId, ref: 'Category', required: true, index: true },
+    category: { type: mongoose.Schema.Types.ObjectId, ref: 'Category', required: false, default: null, index: true },
     image: { type: String, trim: true, default: '' },
     tenant: { type: mongoose.Schema.Types.ObjectId, ref: 'Tenant', required: true, index: true },
     isActive: { type: Boolean, default: true },
